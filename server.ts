@@ -146,7 +146,13 @@ async function startServer() {
         console.log(`Buscando arquivos da pasta do Google Drive: ${folderId}`);
         const q = `'${folderId}' in parents and trashed=false`;
         const encodedQ = encodeURIComponent(q);
-        const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodedQ}&fields=files(id,name,mimeType,size,webContentLink,webViewLink,createdTime,videoMediaMetadata)&key=${googleApiKey}`);
+        const fetchHeaders: any = {};
+        if (req.headers.referer) fetchHeaders['Referer'] = req.headers.referer;
+        else if (process.env.APP_URL) fetchHeaders['Referer'] = process.env.APP_URL;
+
+        const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodedQ}&fields=files(id,name,mimeType,size,webContentLink,webViewLink,createdTime,videoMediaMetadata)&key=${googleApiKey}`, {
+          headers: fetchHeaders
+        });
 
         if (!response.ok) {
           const errText = await response.text();
@@ -166,7 +172,7 @@ async function startServer() {
             name: item.name,
             size: item.size || 0,
             webUrl: item.webViewLink,
-            downloadUrl: `/api/drive/media/${item.id}`,
+            downloadUrl: isImage ? `https://drive.google.com/uc?export=view&id=${item.id}` : `/api/drive/media/${item.id}`,
             isImage,
             isVideo,
             isPdf,
@@ -225,8 +231,13 @@ async function startServer() {
       
       const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
       
+      const fetchHeaders: any = {};
+      if (req.headers.range) fetchHeaders['Range'] = req.headers.range;
+      if (req.headers.referer) fetchHeaders['Referer'] = req.headers.referer;
+      else if (process.env.APP_URL) fetchHeaders['Referer'] = process.env.APP_URL;
+
       const response = await fetch(url, {
-        headers: req.headers.range ? { Range: req.headers.range } : {}
+        headers: fetchHeaders
       });
 
       if (!response.ok) {
