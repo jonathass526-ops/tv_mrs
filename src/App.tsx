@@ -28,7 +28,6 @@ import {
   Link as LinkIcon,
   AlertTriangle
 } from 'lucide-react';
-
 interface AuthStatus {
   connected: boolean;
   hasCredentials: boolean;
@@ -37,7 +36,6 @@ interface AuthStatus {
   publicSharingUrl: string | null;
   isDemo: boolean;
 }
-
 interface MediaFile {
   id: string;
   name: string;
@@ -51,15 +49,12 @@ interface MediaFile {
   mimeType: string;
   durationMillis?: number;
 }
-
 interface OneDriveFolder {
   id: string;
   name: string;
   path: string;
 }
-
 import { useLocalStorage } from './hooks/useLocalStorage';
-
 export default function App() {
   // Authentication & Source Data States
   const [authStatus, setAuthStatus] = useState<AuthStatus>({
@@ -77,7 +72,6 @@ export default function App() {
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
-
   // Slideshow Engine States
   const [slideshowMode, setSlideshowMode] = useState(false);
   const [isDirectView, setIsDirectView] = useState(false);
@@ -88,29 +82,24 @@ export default function App() {
   const [showFileName, setShowFileName] = useLocalStorage('app_showFileName', true);
   const [showClock, setShowClock] = useLocalStorage('app_showClock', true);
   const [showUiInSlideshow, setShowUiInSlideshow] = useLocalStorage('app_showUiInSlideshow', true);
-
   // UI Detail States
   const [selectedDoc, setSelectedDoc] = useState<MediaFile | null>(null);
   const [showCredentialsHelp, setShowCredentialsHelp] = useState(false);
   const [autoRefresh, setAutoRefresh] = useLocalStorage('app_autoRefresh', true);
   const [autoRefreshRate, setAutoRefreshRate] = useLocalStorage('app_autoRefreshRate', 60000); // 1 minute default
   const [currentTime, setCurrentTime] = useState('');
-
   // Active Refs for Slideshow Auto-play
   const autoPlayTimer = useRef<NodeJS.Timeout | null>(null);
   const pollTimer = useRef<NodeJS.Timeout | null>(null);
   const clockTimer = useRef<NodeJS.Timeout | null>(null);
-
   // Filter files to images/videos only for the slideshow
   const mediaFiles = useMemo(() => files.filter(f => f.isImage || f.isVideo || f.isPdf), [files]);
-
   // KPC Timer Logic
   const kpcData = useMemo(() => {
     const now = new Date();
     const currentHour = now.getHours();
     const currentMinute = now.getMinutes();
     const currentTotalMinutes = currentHour * 60 + currentMinute;
-    
     const getRemainingTime = (targetHour: number, targetMinute: number) => {
       const targetDate = new Date(now);
       targetDate.setHours(targetHour, targetMinute, 0, 0);
@@ -121,7 +110,6 @@ export default function App() {
       const s = diffSeconds % 60;
       return `${h > 0 ? h.toString().padStart(2, '0') + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     };
-
     if (currentTotalMinutes >= 10 * 60 + 30 && currentTotalMinutes < 12 * 60) {
       return { message: "Atenção para a formação do KPC das 12h", timer: getRemainingTime(12, 0) };
     } else if (currentTotalMinutes >= 15 * 60 && currentTotalMinutes < 17 * 60) {
@@ -131,7 +119,6 @@ export default function App() {
     }
     return null;
   }, [currentTime]); // recompute every second as currentTime changes
-
   // Fetch Connection Status
   const fetchAuthStatus = useCallback(async () => {
     try {
@@ -144,7 +131,6 @@ export default function App() {
       console.error('Error fetching auth status:', e);
     }
   }, []);
-
   // Fetch Files in Selected Folder
   const fetchFiles = useCallback(async (silent = false) => {
     if (!silent) setIsLoadingFiles(true);
@@ -169,24 +155,20 @@ export default function App() {
       setIsLoadingFiles(false);
     }
   }, []);
-
   // Trigger manual refresh
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await fetchFiles(true);
     setTimeout(() => setIsRefreshing(false), 800);
   };
-
   // Load initial status and files
   useEffect(() => {
     fetchAuthStatus();
-    
     // Check URL for direct view mode
     const searchParams = new URLSearchParams(window.location.search);
     if (searchParams.get('view') === '1' || searchParams.get('view') === 'true') {
       setSlideshowMode(true);
       setIsDirectView(true);
-      
       if (searchParams.has('speed')) setTransitionSpeed(Number(searchParams.get('speed')));
       if (searchParams.has('effect')) setTransitionEffect(searchParams.get('effect') as any);
       if (searchParams.has('filename')) setShowFileName(searchParams.get('filename') === 'true');
@@ -196,11 +178,9 @@ export default function App() {
       if (searchParams.has('rate')) setAutoRefreshRate(Number(searchParams.get('rate')));
     }
   }, [fetchAuthStatus]);
-
   useEffect(() => {
     fetchFiles();
   }, [authStatus.connected, authStatus.selectedFolder, authStatus.publicSharingUrl, fetchFiles]);
-
   // Synchronous Time ticking for Slideshow Clock Overlay
   useEffect(() => {
     const updateTime = () => {
@@ -213,22 +193,18 @@ export default function App() {
       if (clockTimer.current) clearInterval(clockTimer.current);
     };
   }, []);
-
   // Poll for new files if auto-refresh is active
   useEffect(() => {
     if (pollTimer.current) clearInterval(pollTimer.current);
-    
     if (autoRefresh) {
       pollTimer.current = setInterval(() => {
         fetchFiles(true);
       }, autoRefreshRate);
     }
-
     return () => {
       if (pollTimer.current) clearInterval(pollTimer.current);
     };
   }, [autoRefresh, autoRefreshRate, fetchFiles]);
-
   // Listen for Escape key to exit slideshow mode
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -239,24 +215,19 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [slideshowMode, isDirectView]);
-
   // Handle Slideshow Timing Loop
   const handleNextSlide = useCallback(() => {
     if (mediaFiles.length === 0) return;
     setCurrentSlideIndex(prev => (prev + 1) % mediaFiles.length);
   }, [mediaFiles.length]);
-
   const handlePrevSlide = useCallback(() => {
     if (mediaFiles.length === 0) return;
     setCurrentSlideIndex(prev => (prev - 1 + mediaFiles.length) % mediaFiles.length);
   }, [mediaFiles.length]);
-
   // Use a string signature to prevent polling from resetting the timer if the files are the same
   const mediaFilesSignature = useMemo(() => mediaFiles.map(f => f.id).join(','), [mediaFiles]);
-
   useEffect(() => {
     if (autoPlayTimer.current) clearTimeout(autoPlayTimer.current);
-
     if (isPlaying && slideshowMode && mediaFiles.length > 0) {
       if (mediaFiles[currentSlideIndex]?.isVideo) {
          // Rely primarily on the video's onEnded event.
@@ -271,12 +242,10 @@ export default function App() {
         }, transitionSpeed);
       }
     }
-
     return () => {
       if (autoPlayTimer.current) clearTimeout(autoPlayTimer.current);
     };
   }, [isPlaying, slideshowMode, transitionSpeed, currentSlideIndex, handleNextSlide, mediaFilesSignature]);
-
   // Disconnect Google Drive
   const handleDisconnect = async () => {
     if (confirm('Tem certeza que deseja desconectar o Google Drive?')) {
@@ -291,12 +260,10 @@ export default function App() {
       }
     }
   };
-
   // Save Public Sharing Link
   const handleSavePublicLink = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!publicLinkInput.trim()) return;
-
     setIsSubmittingLink(true);
     try {
       const res = await fetch('/api/drive/public-link', {
@@ -306,7 +273,6 @@ export default function App() {
         },
         body: JSON.stringify({ url: publicLinkInput.trim() }),
       });
-
       if (res.ok) {
         setPublicLinkInput('');
         await fetchAuthStatus();
@@ -321,7 +287,6 @@ export default function App() {
       setIsSubmittingLink(false);
     }
   };
-
   // Size formatter helper
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 Bytes';
@@ -330,28 +295,22 @@ export default function App() {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
-
   // Beautiful File icon mapper
   const renderFileIcon = (file: MediaFile) => {
     if (file.isImage) return <ImageIcon className="w-5 h-5 text-emerald-400" />;
-    
     const mime = file.mimeType.toLowerCase();
     if (mime.includes('pdf')) return <FileText className="w-5 h-5 text-rose-400" />;
     if (mime.includes('spreadsheet') || mime.includes('excel') || mime.includes('csv')) return <FileSpreadsheet className="w-5 h-5 text-emerald-500" />;
     if (mime.includes('word') || mime.includes('document')) return <FileText className="w-5 h-5 text-blue-400" />;
     if (mime.includes('javascript') || mime.includes('typescript') || mime.includes('json') || mime.includes('html')) return <FileCode className="w-5 h-5 text-amber-400" />;
-    
     return <File className="w-5 h-5 text-slate-400" />;
   };
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white" id="main-container">
-      
       {/* 1. TOP NAVIGATION BAR */}
       {!slideshowMode && (
         <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-40 transition-all px-4 sm:px-6" id="app-header">
           <div className="max-w-7xl mx-auto flex h-16 items-center justify-between">
-            
             {/* Left side brand */}
             <div className="flex items-center space-x-3">
               <div className="p-2 bg-blue-600/10 text-blue-500 rounded-lg border border-blue-500/20 shadow-inner">
@@ -370,7 +329,6 @@ export default function App() {
                 </p>
               </div>
             </div>
-
             {/* Right side controls */}
             <div className="flex items-center space-x-2">
               {/* Dynamic Connection Indicator */}
@@ -382,7 +340,6 @@ export default function App() {
                 <span className={`w-1.5 h-1.5 rounded-full ${authStatus.isDemo ? 'bg-amber-400' : 'bg-emerald-400 animate-ping'}`} />
                 <span>{authStatus.isDemo ? 'Demo' : 'Sincronizado'}</span>
               </div>
-
               {/* Configure Connection */}
               {!authStatus.isDemo && (
                 <button
@@ -395,15 +352,12 @@ export default function App() {
                 </button>
               )}
             </div>
-
           </div>
         </header>
       )}
-
       {/* 2. MAIN HUB SCREEN */}
       {!slideshowMode ? (
         <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 flex flex-col space-y-6" id="dashboard-body">
-          
           {/* Info banner for Demo Mode */}
           {authStatus.isDemo && (
             <div className="bg-gradient-to-r from-slate-900 to-indigo-950/40 rounded-xl p-5 border border-indigo-500/10 shadow-lg relative overflow-hidden flex flex-col md:flex-row justify-between items-start md:items-center space-y-4 md:space-y-0" id="demo-banner">
@@ -421,13 +375,10 @@ export default function App() {
               </div>
             </div>
           )}
-
           {/* Core App Grid: 1/3 Controls and 2/3 List & Slider */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start" id="app-grid">
-            
             {/* Col 1: Configuration & Settings panel (4 Cols) */}
             <div className="lg:col-span-4 space-y-6">
-              
               {/* Box A: Folder Details / Live Slideshow Starter */}
               <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 shadow-sm" id="folder-status-card">
                 <div className="flex items-start justify-between">
@@ -443,7 +394,6 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-
                 {/* Statistics List */}
                 <div className="mt-5 grid grid-cols-2 gap-3 border-t border-b border-slate-800/80 py-4">
                   <div className="bg-slate-950/50 rounded-lg p-3 border border-slate-800/50">
@@ -459,7 +409,6 @@ export default function App() {
                     </span>
                   </div>
                 </div>
-
                 {/* Public Link Integration */}
                 <div className="my-5 pb-4 border-b border-slate-800/80">
                   {authStatus.publicSharingUrl ? (
@@ -507,7 +456,6 @@ export default function App() {
                     </form>
                   )}
                 </div>
-
                 {/* Slideshow Actions */}
                 <div className="mt-5 space-y-2.5">
                   <button
@@ -523,7 +471,6 @@ export default function App() {
                     <Maximize2 className="w-4 h-4 group-hover:scale-110 transition" />
                     <span>Iniciar Porta-Retrato Digital</span>
                   </button>
-
                   <button
                     onClick={() => {
                       const url = new URL(window.location.href);
@@ -543,20 +490,17 @@ export default function App() {
                     <LinkIcon className="w-4 h-4" />
                     <span>Copiar Link de Visualização Direta</span>
                   </button>
-                  
                   <p className="text-center text-[11px] text-slate-500 italic mt-2">
                     Perfeito para telas inteiras, TVs, monitores de escritório ou tablets.
                   </p>
                 </div>
               </div>
-
               {/* Box B: Display Options & Slideshow Properties */}
               <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 shadow-sm space-y-5" id="slideshow-options-card">
                 <h3 className="font-bold text-sm tracking-wide text-slate-300 uppercase border-b border-slate-800/80 pb-2 flex items-center space-x-1.5">
                   <Settings className="w-4 h-4 text-slate-400" />
                   <span>Ajustes do Porta-Retrato</span>
                 </h3>
-
                 {/* Slide Transition Speed */}
                 <div className="space-y-2">
                   <label className="text-xs text-slate-400 font-semibold block">Tempo de Transição</label>
@@ -576,7 +520,6 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-
                 {/* Transition Effect Style */}
                 <div className="space-y-2">
                   <label className="text-xs text-slate-400 font-semibold block">Estilo de Transição</label>
@@ -596,7 +539,6 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-
                 {/* Slideshow Toggles */}
                 <div className="space-y-3 pt-2">
                   {/* Toggle Show Clock */}
@@ -609,7 +551,6 @@ export default function App() {
                       className="rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-blue-500/30 w-4 h-4 cursor-pointer"
                     />
                   </label>
-
                   {/* Toggle Show Filename */}
                   <label className="flex items-center justify-between cursor-pointer group">
                     <span className="text-xs text-slate-400 group-hover:text-slate-300 transition">Exibir Título da Imagem</span>
@@ -621,7 +562,6 @@ export default function App() {
                     />
                   </label>
                 </div>
-
                 {/* Polling / Auto-refresh rate config */}
                 <div className="border-t border-slate-800/80 pt-4 space-y-3">
                   <label className="flex items-center justify-between cursor-pointer group">
@@ -636,7 +576,6 @@ export default function App() {
                       className="rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-blue-500/30 w-4 h-4 cursor-pointer"
                     />
                   </label>
-
                   {autoRefresh && (
                     <div className="space-y-1.5 animate-fadeIn">
                       <span className="text-[10px] text-slate-500 block">Frequência de Varredura</span>
@@ -653,17 +592,12 @@ export default function App() {
                     </div>
                   )}
                 </div>
-
               </div>
-
             </div>
-
             {/* Col 2: Live Files list & Preview screen (8 Cols) */}
             <div className="lg:col-span-8 space-y-6">
-              
               {/* Section A: Live Image Carousel preview */}
               <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden shadow-sm flex flex-col h-72 sm:h-96 relative group" id="quick-preview-panel">
-                
                 {mediaFiles.length > 0 ? (
                   <>
                     {/* Live Slide */}
@@ -673,6 +607,7 @@ export default function App() {
                           src={mediaFiles[currentSlideIndex]?.downloadUrl || ''}
                           className="max-h-full max-w-full object-contain transition-all duration-500 bg-black"
                           autoPlay
+                          controls
                           muted
                           playsInline
                           loop
@@ -688,10 +623,8 @@ export default function App() {
                           alt={mediaFiles[currentSlideIndex]?.name}
                           className="max-h-full max-w-full object-contain transition-all duration-500"
                           id="preview-img-tag"
-                          referrerPolicy="no-referrer"
                         />
                       )}
-                      
                       {/* Dark overlay gradients */}
                       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent p-4 flex flex-col justify-end" id="preview-text-overlay">
                         <span className="text-[11px] font-mono uppercase text-blue-400 tracking-wider">Miniatura de Slideshow</span>
@@ -700,7 +633,6 @@ export default function App() {
                         </h4>
                       </div>
                     </div>
-
                     {/* Quick navigation arrows on hover */}
                     <div className="absolute inset-y-0 left-0 right-0 flex justify-between items-center px-4 opacity-0 group-hover:opacity-100 transition duration-300 pointer-events-none">
                       <button
@@ -718,7 +650,6 @@ export default function App() {
                         <ChevronRight className="w-5 h-5" />
                       </button>
                     </div>
-
                     {/* Footer Carousel controllers */}
                     <div className="bg-slate-900 px-4 py-3 border-t border-slate-800 flex items-center justify-between" id="preview-controllers">
                       <div className="flex items-center space-x-2">
@@ -732,7 +663,6 @@ export default function App() {
                           Slide {currentSlideIndex + 1} de {mediaFiles.length}
                         </span>
                       </div>
-                      
                       <button
                         onClick={() => setSlideshowMode(true)}
                         className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold flex items-center space-x-1 transition"
@@ -752,7 +682,6 @@ export default function App() {
                   </div>
                 )}
               </div>
-
               {/* Section B: General Files and Documents List Table */}
               <div className="bg-slate-900 rounded-xl border border-slate-800 p-5 shadow-sm" id="files-list-panel">
                 <div className="flex justify-between items-center mb-4">
@@ -764,7 +693,6 @@ export default function App() {
                       Visualização de todos os formatos presentes na pasta
                     </p>
                   </div>
-
                   <button
                     onClick={handleRefresh}
                     disabled={isRefreshing}
@@ -774,7 +702,6 @@ export default function App() {
                     <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                   </button>
                 </div>
-
                 {/* File Error Alert Banner */}
                 {fileError && (
                   <div className="mb-4 bg-rose-950/40 border border-rose-500/50 text-rose-200 p-5 rounded-xl flex flex-col items-center justify-center text-center space-y-3 shadow-lg" id="file-error-banner">
@@ -785,7 +712,6 @@ export default function App() {
                     </div>
                   </div>
                 )}
-
                 {isLoadingFiles ? (
                   <div className="py-12 flex flex-col items-center justify-center space-y-2 text-slate-500" id="loading-spinner">
                     <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
@@ -837,20 +763,14 @@ export default function App() {
                   </div>
                 )}
               </div>
-
             </div>
-
           </div>
-
         </main>
       ) : (
-        
         // 3. IMMERSIVE FULL-SCREEN PORTRAIT SLIDESHOW SCREEN
         <div className="fixed inset-0 bg-black z-50 flex flex-col justify-between select-none overflow-hidden" id="full-slideshow-canvas">
-          
           {mediaFiles.length > 0 ? (
             <div className="absolute inset-0 flex items-center justify-center bg-black">
-              
               {/* Dynamic transitions mapped with custom animations */}
               <div 
                 className="absolute inset-0 flex items-center justify-center p-2 sm:p-4 transition-all duration-1000 ease-in-out"
@@ -864,6 +784,7 @@ export default function App() {
                     src={mediaFiles[currentSlideIndex]?.downloadUrl || ''}
                     className="max-h-full max-w-full object-contain animate-fadeIn shadow-2xl bg-black"
                     autoPlay
+                    controls
                     muted
                     playsInline
                     onEnded={isPlaying ? handleNextSlide : undefined}
@@ -884,11 +805,17 @@ export default function App() {
                     alt={mediaFiles[currentSlideIndex]?.name}
                     className="max-h-full max-w-full object-contain animate-fadeIn shadow-2xl"
                     id="active-slideshow-img"
-                    referrerPolicy="no-referrer"
                   />
                 )}
               </div>
-
+              {/* Preload Next Media */}
+              <div className="hidden" aria-hidden="true" style={{ display: 'none' }}>
+                {mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.isVideo ? (
+                  <video src={mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.downloadUrl || ''} preload="auto" muted />
+                ) : (
+                  <img src={mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.downloadUrl || ''} />
+                )}
+              </div>
               {/* Bottom/Top Overlays */}
               {kpcData && (
                 <div className="absolute top-6 left-1/2 -translate-x-1/2 z-40 bg-red-600/90 text-white px-6 py-3 rounded-2xl shadow-2xl backdrop-blur-md flex items-center space-x-4 animate-fadeIn border border-red-500/50">
@@ -902,14 +829,12 @@ export default function App() {
                   </div>
                 </div>
               )}
-
               <div 
                 className={`absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-6 sm:p-10 flex flex-col sm:flex-row sm:items-end justify-between space-y-4 sm:space-y-0 transition-opacity duration-500 ${
                   showUiInSlideshow ? 'opacity-100' : 'opacity-0 hover:opacity-100'
                 }`}
                 id="slideshow-hud-overlay"
               >
-                
                 {/* Filename caption */}
                 {showFileName ? (
                   <div className="max-w-2xl">
@@ -926,7 +851,6 @@ export default function App() {
                 ) : (
                   <div className="h-4" />
                 )}
-
                 {/* Clock Overlay */}
                 {showClock && (
                   <div className="flex items-center space-x-3.5 bg-black/40 backdrop-blur-md px-5 py-2.5 rounded-2xl border border-white/5 shadow-inner shrink-0 sm:self-end">
@@ -942,7 +866,6 @@ export default function App() {
                   </div>
                 )}
               </div>
-
               {/* Top Controls Quick Overlay */}
               <div 
                 className={`absolute top-4 right-4 z-30 flex items-center space-x-2 bg-black/60 backdrop-blur-md p-1.5 rounded-xl border border-white/5 transition-opacity duration-500 ${
@@ -986,14 +909,12 @@ export default function App() {
                   </button>
                 )}
               </div>
-
               {/* Quick UI auto-hide overlay sensor */}
               <div 
                 className="absolute inset-x-0 top-0 h-24 cursor-pointer"
                 onClick={() => setShowUiInSlideshow(!showUiInSlideshow)}
                 title="Clique para alternar barras de controle"
               />
-
             </div>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 p-6 text-center">
@@ -1007,15 +928,12 @@ export default function App() {
               </button>
             </div>
           )}
-
         </div>
       )}
-
       {/* 5. MODAL: GOOGLE API KEY INSTRUCTIONS */}
       {showCredentialsHelp && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto animate-fadeIn" id="credentials-modal">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl relative">
-            
             {/* Header */}
             <div className="flex justify-between items-start mb-6">
               <div className="flex items-center space-x-3">
@@ -1038,17 +956,14 @@ export default function App() {
                 &times;
               </button>
             </div>
-
             {/* Steps Instruction */}
             <div className="space-y-5 text-sm leading-relaxed text-slate-300 max-h-[440px] overflow-y-auto pr-2" id="modal-steps-container">
-              
               <div className="bg-blue-950/20 border border-blue-500/10 rounded-xl p-4 flex items-start space-x-3">
                 <Info className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
                 <div className="text-xs text-blue-300">
                   Para que o site consiga listar e baixar os arquivos da pasta que você forneceu, precisamos de uma Chave de API pública com o Google Drive ativado. Nenhuma autenticação (OAuth) é necessária, pois a pasta é pública.
                 </div>
               </div>
-
               {/* Step 1 */}
               <div className="space-y-1.5">
                 <h4 className="font-bold text-slate-200 flex items-center space-x-2">
@@ -1059,7 +974,6 @@ export default function App() {
                   Vá para o <a href="https://console.cloud.google.com/" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline inline-flex items-center">Google Cloud Console <ExternalLink className="w-3 h-3 ml-0.5" /></a> e crie um novo projeto (ou selecione um já existente).
                 </p>
               </div>
-
               {/* Step 2 */}
               <div className="space-y-1.5">
                 <h4 className="font-bold text-slate-200 flex items-center space-x-2">
@@ -1070,7 +984,6 @@ export default function App() {
                   No menu lateral esquerdo, vá em <b>APIs e Serviços</b> &gt; <b>Biblioteca</b>. Pesquise por "Google Drive API", clique no resultado e depois em <b>Ativar</b>.
                 </p>
               </div>
-
               {/* Step 3 */}
               <div className="space-y-1.5">
                 <h4 className="font-bold text-slate-200 flex items-center space-x-2">
@@ -1081,7 +994,6 @@ export default function App() {
                   Ainda em <b>APIs e Serviços</b>, clique em <b>Credenciais</b> no menu da esquerda. Depois clique no botão no topo <b>+ CRIAR CREDENCIAIS</b> e escolha <b>Chave de API</b>. Copie a chave gerada.
                 </p>
               </div>
-
               {/* Step 4 */}
               <div className="space-y-1.5">
                 <h4 className="font-bold text-slate-200 flex items-center space-x-2">
@@ -1098,9 +1010,7 @@ export default function App() {
                   </div>
                 </div>
               </div>
-
             </div>
-
             {/* Modal action footer */}
             <div className="mt-7 pt-4 border-t border-slate-800/80 flex justify-end">
               <button
@@ -1110,28 +1020,23 @@ export default function App() {
                 Entendi, Fechar
               </button>
             </div>
-
           </div>
         </div>
       )}
-
       {/* 6. MODAL: DETAILED FILE INSPECTOR (For documents and metadata) */}
       {selectedDoc && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fadeIn" id="file-inspector-modal">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
-            
             <button 
               onClick={() => setSelectedDoc(null)}
               className="absolute top-4 right-4 text-slate-500 hover:text-slate-300 text-xl font-bold font-mono"
             >
               &times;
             </button>
-
             <div className="flex flex-col items-center text-center space-y-4">
               <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
                 {renderFileIcon(selectedDoc)}
               </div>
-              
               <div>
                 <h3 className="font-bold text-slate-200 text-base line-clamp-2 px-2">
                   {selectedDoc.name}
@@ -1140,7 +1045,6 @@ export default function App() {
                   ID: {selectedDoc.id}
                 </span>
               </div>
-
               {/* Attributes Grid */}
               <div className="w-full bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs text-left font-mono space-y-2">
                 <div className="flex justify-between">
@@ -1156,7 +1060,6 @@ export default function App() {
                   <span className="text-slate-300">{new Date(selectedDoc.lastModified).toLocaleString('pt-BR')}</span>
                 </div>
               </div>
-
               {/* Action Buttons */}
               <div className="w-full flex space-x-2 pt-2">
                 <button
@@ -1187,13 +1090,10 @@ export default function App() {
                   </a>
                 )}
               </div>
-
             </div>
-
           </div>
         </div>
       )}
-
       {/* FOOTER */}
       {!slideshowMode && (
         <footer className="border-t border-slate-900 bg-slate-950 py-5 px-4 text-center text-xs text-slate-500" id="app-footer">
@@ -1212,7 +1112,6 @@ export default function App() {
           </div>
         </footer>
       )}
-
     </div>
   );
 }

@@ -172,7 +172,7 @@ async function startServer() {
             name: item.name,
             size: item.size || 0,
             webUrl: item.webViewLink,
-            downloadUrl: isImage ? `https://drive.google.com/uc?export=view&id=${item.id}` : `/api/drive/media/${item.id}`,
+            downloadUrl: `https://www.googleapis.com/drive/v3/files/${item.id}?alt=media&key=${googleApiKey}`,
             isImage,
             isVideo,
             isPdf,
