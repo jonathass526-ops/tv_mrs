@@ -811,7 +811,7 @@ export default function App() {
               {/* Preload Next Media */}
               <div className="hidden" aria-hidden="true" style={{ display: 'none' }}>
                 {mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.isVideo ? (
-                  <video src={mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.downloadUrl || ''} preload="auto" muted />
+                  <video src={mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.downloadUrl || ''} preload="metadata" muted />
                 ) : (
                   <img src={mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.downloadUrl || ''} />
                 )}
