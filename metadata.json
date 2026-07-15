@@ -1,0 +1,6 @@
+{
+  "name": "OneDrive Slideshow & File Viewer",
+  "description": "Exiba automaticamente imagens e arquivos de um diretório específico do seu OneDrive em uma tela de slideshow elegante, com transições, modo de tela cheia e atualização automática.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
