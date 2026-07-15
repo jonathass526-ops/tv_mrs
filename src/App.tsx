@@ -58,6 +58,8 @@ interface OneDriveFolder {
   path: string;
 }
 
+import { useLocalStorage } from './hooks/useLocalStorage';
+
 export default function App() {
   // Authentication & Source Data States
   const [authStatus, setAuthStatus] = useState<AuthStatus>({
@@ -81,17 +83,17 @@ export default function App() {
   const [isDirectView, setIsDirectView] = useState(false);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
-  const [transitionSpeed, setTransitionSpeed] = useState(5000); // 5 seconds default
-  const [transitionEffect, setTransitionEffect] = useState<'fade' | 'zoom' | 'slide'>('fade');
-  const [showFileName, setShowFileName] = useState(true);
-  const [showClock, setShowClock] = useState(true);
-  const [showUiInSlideshow, setShowUiInSlideshow] = useState(true);
+  const [transitionSpeed, setTransitionSpeed] = useLocalStorage('app_transitionSpeed', 5000);
+  const [transitionEffect, setTransitionEffect] = useLocalStorage<'fade' | 'zoom' | 'slide'>('app_transitionEffect', 'fade');
+  const [showFileName, setShowFileName] = useLocalStorage('app_showFileName', true);
+  const [showClock, setShowClock] = useLocalStorage('app_showClock', true);
+  const [showUiInSlideshow, setShowUiInSlideshow] = useLocalStorage('app_showUiInSlideshow', true);
 
   // UI Detail States
   const [selectedDoc, setSelectedDoc] = useState<MediaFile | null>(null);
   const [showCredentialsHelp, setShowCredentialsHelp] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [autoRefreshRate, setAutoRefreshRate] = useState(60000); // 1 minute default
+  const [autoRefresh, setAutoRefresh] = useLocalStorage('app_autoRefresh', true);
+  const [autoRefreshRate, setAutoRefreshRate] = useLocalStorage('app_autoRefreshRate', 60000); // 1 minute default
   const [currentTime, setCurrentTime] = useState('');
 
   // Active Refs for Slideshow Auto-play
@@ -184,6 +186,14 @@ export default function App() {
     if (searchParams.get('view') === '1' || searchParams.get('view') === 'true') {
       setSlideshowMode(true);
       setIsDirectView(true);
+      
+      if (searchParams.has('speed')) setTransitionSpeed(Number(searchParams.get('speed')));
+      if (searchParams.has('effect')) setTransitionEffect(searchParams.get('effect') as any);
+      if (searchParams.has('filename')) setShowFileName(searchParams.get('filename') === 'true');
+      if (searchParams.has('clock')) setShowClock(searchParams.get('clock') === 'true');
+      if (searchParams.has('ui')) setShowUiInSlideshow(searchParams.get('ui') === 'true');
+      if (searchParams.has('refresh')) setAutoRefresh(searchParams.get('refresh') === 'true');
+      if (searchParams.has('rate')) setAutoRefreshRate(Number(searchParams.get('rate')));
     }
   }, [fetchAuthStatus]);
 
@@ -241,24 +251,31 @@ export default function App() {
     setCurrentSlideIndex(prev => (prev - 1 + mediaFiles.length) % mediaFiles.length);
   }, [mediaFiles.length]);
 
+  // Use a string signature to prevent polling from resetting the timer if the files are the same
+  const mediaFilesSignature = useMemo(() => mediaFiles.map(f => f.id).join(','), [mediaFiles]);
+
   useEffect(() => {
     if (autoPlayTimer.current) clearTimeout(autoPlayTimer.current);
 
     if (isPlaying && slideshowMode && mediaFiles.length > 0) {
-      let timeoutSpeed = transitionSpeed;
       if (mediaFiles[currentSlideIndex]?.isVideo) {
-         // Add 2 seconds padding to allow iframe to load
-         timeoutSpeed = (mediaFiles[currentSlideIndex].durationMillis || 30000) + 2000;
+         // Rely primarily on the video's onEnded event.
+         // Set a generous fallback timeout in case the video stalls or fails to play.
+         const duration = mediaFiles[currentSlideIndex].durationMillis || 30000;
+         autoPlayTimer.current = setTimeout(() => {
+           handleNextSlide();
+         }, duration + 10000); // 10s padding for buffering/errors
+      } else {
+        autoPlayTimer.current = setTimeout(() => {
+          handleNextSlide();
+        }, transitionSpeed);
       }
-      autoPlayTimer.current = setTimeout(() => {
-        handleNextSlide();
-      }, timeoutSpeed);
     }
 
     return () => {
       if (autoPlayTimer.current) clearTimeout(autoPlayTimer.current);
     };
-  }, [isPlaying, slideshowMode, transitionSpeed, mediaFiles.length, currentSlideIndex, mediaFiles, handleNextSlide]);
+  }, [isPlaying, slideshowMode, transitionSpeed, currentSlideIndex, handleNextSlide, mediaFilesSignature]);
 
   // Disconnect Google Drive
   const handleDisconnect = async () => {
@@ -511,8 +528,15 @@ export default function App() {
                     onClick={() => {
                       const url = new URL(window.location.href);
                       url.searchParams.set('view', '1');
+                      url.searchParams.set('speed', transitionSpeed.toString());
+                      url.searchParams.set('effect', transitionEffect);
+                      url.searchParams.set('filename', showFileName.toString());
+                      url.searchParams.set('clock', showClock.toString());
+                      url.searchParams.set('ui', showUiInSlideshow.toString());
+                      url.searchParams.set('refresh', autoRefresh.toString());
+                      url.searchParams.set('rate', autoRefreshRate.toString());
                       navigator.clipboard.writeText(url.toString());
-                      alert('Link copiado para a área de transferência! Envie para quem você quiser para acessar diretamente no modo de visualização.');
+                      alert('Link copiado para a área de transferência! Envie para quem você quiser para acessar diretamente no modo de visualização com as configurações atuais.');
                     }}
                     className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-medium rounded-xl text-sm transition-all flex items-center justify-center space-x-2 border border-slate-700 hover:border-slate-600"
                   >
@@ -645,10 +669,13 @@ export default function App() {
                     {/* Live Slide */}
                     <div className="flex-1 bg-slate-950 relative overflow-hidden flex items-center justify-center">
                       {mediaFiles[currentSlideIndex]?.isVideo ? (
-                        <iframe
-                          src={mediaFiles[currentSlideIndex]?.webUrl?.replace('/view', '/preview?autoplay=1&mute=1') || mediaFiles[currentSlideIndex]?.downloadUrl || ''}
-                          className="w-full h-full border-none transition-all duration-500 bg-black"
-                          allow="autoplay"
+                        <video
+                          src={mediaFiles[currentSlideIndex]?.downloadUrl || ''}
+                          className="max-h-full max-w-full object-contain transition-all duration-500 bg-black"
+                          autoPlay
+                          muted
+                          playsInline
+                          loop
                         />
                       ) : mediaFiles[currentSlideIndex]?.isPdf ? (
                         <iframe
@@ -833,10 +860,18 @@ export default function App() {
                 key={currentSlideIndex} // Triggers react re-mount to run entry transitions smoothly
               >
                 {mediaFiles[currentSlideIndex]?.isVideo ? (
-                  <iframe
-                    src={mediaFiles[currentSlideIndex]?.webUrl?.replace('/view', '/preview?autoplay=1&mute=0') || mediaFiles[currentSlideIndex]?.downloadUrl || ''}
-                    className="w-full h-full border-none animate-fadeIn shadow-2xl bg-black"
-                    allow="autoplay"
+                  <video
+                    src={mediaFiles[currentSlideIndex]?.downloadUrl || ''}
+                    className="max-h-full max-w-full object-contain animate-fadeIn shadow-2xl bg-black"
+                    autoPlay
+                    muted
+                    playsInline
+                    onEnded={isPlaying ? handleNextSlide : undefined}
+                    onError={(e) => {
+                      console.error('Video error:', e);
+                      // Skip to next slide if video fails
+                      if (isPlaying) setTimeout(handleNextSlide, 3000);
+                    }}
                   />
                 ) : mediaFiles[currentSlideIndex]?.isPdf ? (
                   <iframe
