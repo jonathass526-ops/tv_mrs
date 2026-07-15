@@ -276,7 +276,18 @@ async function startServer() {
 
   if (isProduction) {
     // In production, serve build assets statically
-    const distPath = path.resolve('./dist');
+    // Ensure we find the correct dist directory whether running from project root or inside dist/
+    let distPath = path.resolve(process.cwd(), 'dist');
+    if (!fs.existsSync(path.join(distPath, 'index.html')) && fs.existsSync(path.join(process.cwd(), 'index.html'))) {
+      distPath = process.cwd();
+    } else if (typeof __dirname !== 'undefined') {
+       if (fs.existsSync(path.join(__dirname, 'index.html'))) {
+           distPath = __dirname;
+       } else if (fs.existsSync(path.join(__dirname, 'dist', 'index.html'))) {
+           distPath = path.join(__dirname, 'dist');
+       }
+    }
+    
     app.use(express.static(distPath));
 
     // Fallback for Single Page App routing
