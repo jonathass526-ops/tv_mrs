@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
+import { Readable } from 'stream';
 import dotenv from 'dotenv';
 import https from 'https';
 
@@ -214,49 +215,40 @@ async function startServer() {
   });
 
   // 5. Proxy endpoint to download/stream Google Drive media bypassing 403
-  app.get('/api/drive/media/:id', (req, res) => {
+  app.get('/api/drive/media/:id', async (req, res) => {
     try {
       const fileId = req.params.id;
       const googleApiKey = process.env.GOOGLE_API_KEY;
       if (!googleApiKey) {
         return res.status(500).json({ error: 'Google API key missing.' });
       }
-
+      
       const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
       
-      const options: any = {
-        method: 'GET',
-        headers: {}
-      };
-      
-      if (req.headers.range) {
-        options.headers['Range'] = req.headers.range;
+      const response = await fetch(url, {
+        headers: req.headers.range ? { Range: req.headers.range } : {}
+      });
+
+      if (!response.ok) {
+         console.error(`Google API Error (${response.status}):`, await response.text());
+         return res.status(response.status).send('Error fetching media');
       }
+
+      res.status(response.status);
       
-      const proxyReq = https.request(url, options, (proxyRes: any) => {
-        res.status(proxyRes.statusCode || 200);
-        
-        // Forward headers
-        for (const [key, value] of Object.entries(proxyRes.headers)) {
-          if (value) {
-             res.setHeader(key, value as any);
-          }
+      // Forward safe headers
+      response.headers.forEach((value, key) => {
+        const lowerKey = key.toLowerCase();
+        if (['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control', 'last-modified', 'etag'].includes(lowerKey)) {
+          res.setHeader(key, value);
         }
-        res.setHeader('Accept-Ranges', 'bytes');
-        
-        proxyRes.pipe(res);
       });
       
-      proxyReq.on('error', (err: any) => {
-        console.error('Proxy req error:', err);
-        if (!res.headersSent) res.status(500).send('Proxy error');
-      });
-      
-      req.on('close', () => {
-        proxyReq.destroy();
-      });
-      
-      proxyReq.end();
+      if (response.body) {
+        Readable.fromWeb(response.body as any).pipe(res);
+      } else {
+        res.end();
+      }
     } catch (e) {
       console.error('Error proxying media file:', e);
       if (!res.headersSent) res.status(500).send('Internal server error proxying file');
