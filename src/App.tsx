@@ -3,6 +3,14 @@ import {
   Cloud, 
   Folder, 
   FolderOpen, 
+  FolderPlus,
+  Building2,
+  MapPin,
+  Copy,
+  Pencil,
+  Trash2,
+  Plus,
+  X,
   Image as ImageIcon, 
   FileText, 
   FileCheck, 
@@ -26,7 +34,17 @@ import {
   ExternalLink,
   Laptop,
   Link as LinkIcon,
-  AlertTriangle
+  AlertTriangle,
+  Volume2,
+  VolumeX,
+  Train,
+  Radio,
+  Bell,
+  ListPlus,
+  CheckCircle2,
+  Maximize,
+  Minimize,
+  Scaling
 } from 'lucide-react';
 interface AuthStatus {
   connected: boolean;
@@ -54,6 +72,22 @@ interface OneDriveFolder {
   name: string;
   path: string;
 }
+interface TrainAlert {
+  id: string;
+  prefix: string;
+  time: string;
+  status?: string;
+  active?: boolean;
+}
+interface Sede {
+  id: string;
+  name: string;
+  folderUrl: string;
+  folderId: string;
+  description?: string;
+  trainAlerts?: TrainAlert[];
+  createdAt: string;
+}
 import { useLocalStorage } from './hooks/useLocalStorage';
 export default function App() {
   // Authentication & Source Data States
@@ -65,6 +99,28 @@ export default function App() {
     publicSharingUrl: null,
     isDemo: true,
   });
+  // Sedes Management States
+  const [sedes, setSedes] = useState<Sede[]>([]);
+  const [activeSede, setActiveSede] = useState<Sede | null>(null);
+  const [isSedeModalOpen, setIsSedeModalOpen] = useState(false);
+  const [editingSede, setEditingSede] = useState<Sede | null>(null);
+  const [sedeNameInput, setSedeNameInput] = useState('');
+  const [sedeUrlInput, setSedeUrlInput] = useState('');
+  const [sedeDescInput, setSedeDescInput] = useState('');
+  const [isSavingSede, setIsSavingSede] = useState(false);
+  const [sedeError, setSedeError] = useState<string | null>(null);
+  const [copiedSedeId, setCopiedSedeId] = useState<string | null>(null);
+
+  // Train Formation Alerts States
+  const [trainAlerts, setTrainAlerts] = useState<TrainAlert[]>([]);
+  const [isAlertsModalOpen, setIsAlertsModalOpen] = useState(false);
+  const [selectedSedeForAlerts, setSelectedSedeForAlerts] = useState<Sede | null>(null);
+  const [alertPrefixInput, setAlertPrefixInput] = useState('');
+  const [alertTimeInput, setAlertTimeInput] = useState('');
+  const [alertStatusInput, setAlertStatusInput] = useState('Formação Prevista');
+  const [isSavingAlerts, setIsSavingAlerts] = useState(false);
+  const [showTrainAlertsTicker, setShowTrainAlertsTicker] = useLocalStorage('app_showTrainAlertsTicker', true);
+
   const [publicLinkInput, setPublicLinkInput] = useState('');
   const [isSubmittingLink, setIsSubmittingLink] = useState(false);
   const [resolvedFolderName, setResolvedFolderName] = useState('');
@@ -76,12 +132,34 @@ export default function App() {
   const [slideshowMode, setSlideshowMode] = useState(false);
   const [isDirectView, setIsDirectView] = useState(false);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
+  const [renderedIndex, setRenderedIndex] = useState(0);
+  const [isFadingOut, setIsFadingOut] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [transitionSpeed, setTransitionSpeed] = useLocalStorage('app_transitionSpeed', 5000);
   const [transitionEffect, setTransitionEffect] = useLocalStorage<'fade' | 'zoom' | 'slide'>('app_transitionEffect', 'fade');
   const [showFileName, setShowFileName] = useLocalStorage('app_showFileName', true);
   const [showClock, setShowClock] = useLocalStorage('app_showClock', true);
   const [showUiInSlideshow, setShowUiInSlideshow] = useLocalStorage('app_showUiInSlideshow', true);
+  const [videoMuted, setVideoMuted] = useState(false);
+  const [videoFitMode, setVideoFitMode] = useLocalStorage<'cover' | 'contain' | 'fill'>('app_videoFitMode', 'cover');
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
+
+  const toggleNativeFullscreen = () => {
+    if (!document.fullscreenElement) {
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().then(() => setIsNativeFullscreen(true)).catch(err => console.log('Fullscreen error:', err));
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().then(() => setIsNativeFullscreen(false)).catch(err => console.log('Exit fullscreen error:', err));
+      }
+    }
+  };
+  // Offline caching states
+  const [downloadProgress, setDownloadProgress] = useState<{ total: number; loaded: number }>({ total: 0, loaded: 0 });
+  const [downloadStatus, setDownloadStatus] = useState<'idle' | 'downloading' | 'completed' | 'error'>('idle');
+  const [activeBlobUrls, setActiveBlobUrls] = useState<Record<string, string>>({});
+  const activeBlobUrlsRef = useRef<Record<string, string>>({});
   // UI Detail States
   const [selectedDoc, setSelectedDoc] = useState<MediaFile | null>(null);
   const [showCredentialsHelp, setShowCredentialsHelp] = useState(false);
@@ -119,6 +197,20 @@ export default function App() {
     }
     return null;
   }, [currentTime]); // recompute every second as currentTime changes
+
+  // Fetch Sedes
+  const fetchSedes = useCallback(async () => {
+    try {
+      const res = await fetch('/api/sedes');
+      if (res.ok) {
+        const data = await res.json();
+        setSedes(data.sedes || []);
+      }
+    } catch (e) {
+      console.error('Erro ao buscar sedes:', e);
+    }
+  }, []);
+
   // Fetch Connection Status
   const fetchAuthStatus = useCallback(async () => {
     try {
@@ -131,12 +223,19 @@ export default function App() {
       console.error('Error fetching auth status:', e);
     }
   }, []);
-  // Fetch Files in Selected Folder
-  const fetchFiles = useCallback(async (silent = false) => {
+
+  // Fetch Files in Selected Folder or Sede
+  const fetchFiles = useCallback(async (silent = false, sedeIdOverride?: string) => {
     if (!silent) setIsLoadingFiles(true);
     setFileError(null);
     try {
-      const res = await fetch('/api/drive/files');
+      const searchParams = new URLSearchParams(window.location.search);
+      const targetSedeId = sedeIdOverride || activeSede?.id || searchParams.get('sede');
+      const url = targetSedeId 
+        ? `/api/drive/files?sedeId=${encodeURIComponent(targetSedeId)}` 
+        : '/api/drive/files';
+
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         if (data.error) {
@@ -144,6 +243,12 @@ export default function App() {
         }
         setFiles(data.files || []);
         setResolvedFolderName(data.folderName || '');
+
+        if (Array.isArray(data.trainAlerts)) {
+          setTrainAlerts(data.trainAlerts);
+        } else if (data.sede?.trainAlerts) {
+          setTrainAlerts(data.sede.trainAlerts);
+        }
       } else {
         const data = await res.json().catch(() => ({}));
         setFileError(data.error || 'Erro desconhecido ao carregar arquivos da pasta.');
@@ -154,19 +259,236 @@ export default function App() {
     } finally {
       setIsLoadingFiles(false);
     }
-  }, []);
+  }, [activeSede]);
+
+  // Train Formation Alerts Action Handlers
+  const handleOpenAlertsModal = (sede: Sede, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedSedeForAlerts(sede);
+    setAlertPrefixInput('');
+    setAlertTimeInput('');
+    setAlertStatusInput('Formação Prevista');
+    setIsAlertsModalOpen(true);
+  };
+
+  const handleAddAlertToSede = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedSedeForAlerts || !alertPrefixInput.trim() || !alertTimeInput.trim()) return;
+
+    const newAlert: TrainAlert = {
+      id: 'alert-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 5),
+      prefix: alertPrefixInput.trim().toUpperCase(),
+      time: alertTimeInput.trim(),
+      status: alertStatusInput.trim() || 'Formação Prevista',
+      active: true,
+    };
+
+    const updatedAlerts = [...(selectedSedeForAlerts.trainAlerts || []), newAlert];
+
+    setIsSavingAlerts(true);
+    try {
+      const res = await fetch(`/api/sedes/${selectedSedeForAlerts.id}/alerts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trainAlerts: updatedAlerts }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setSedes(data.sedes || []);
+        const updatedSede = (data.sedes || []).find((s: Sede) => s.id === selectedSedeForAlerts.id);
+        if (updatedSede) {
+          setSelectedSedeForAlerts(updatedSede);
+          if (activeSede?.id === updatedSede.id) {
+            setActiveSede(updatedSede);
+            setTrainAlerts(updatedSede.trainAlerts || []);
+          }
+        }
+        setAlertPrefixInput('');
+        setAlertTimeInput('');
+      }
+    } catch (err) {
+      console.error('Erro ao salvar alerta de trem:', err);
+    } finally {
+      setIsSavingAlerts(false);
+    }
+  };
+
+  const handleToggleAlertStatus = async (alertId: string) => {
+    if (!selectedSedeForAlerts) return;
+    const currentAlerts = selectedSedeForAlerts.trainAlerts || [];
+    const updatedAlerts = currentAlerts.map(a => a.id === alertId ? { ...a, active: a.active === false ? true : false } : a);
+
+    try {
+      const res = await fetch(`/api/sedes/${selectedSedeForAlerts.id}/alerts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trainAlerts: updatedAlerts }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setSedes(data.sedes || []);
+        const updatedSede = (data.sedes || []).find((s: Sede) => s.id === selectedSedeForAlerts.id);
+        if (updatedSede) {
+          setSelectedSedeForAlerts(updatedSede);
+          if (activeSede?.id === updatedSede.id) {
+            setActiveSede(updatedSede);
+            setTrainAlerts(updatedSede.trainAlerts || []);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao alterar status do alerta:', err);
+    }
+  };
+
+  const handleDeleteAlert = async (alertId: string) => {
+    if (!selectedSedeForAlerts) return;
+    const currentAlerts = selectedSedeForAlerts.trainAlerts || [];
+    const updatedAlerts = currentAlerts.filter(a => a.id !== alertId);
+
+    try {
+      const res = await fetch(`/api/sedes/${selectedSedeForAlerts.id}/alerts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trainAlerts: updatedAlerts }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setSedes(data.sedes || []);
+        const updatedSede = (data.sedes || []).find((s: Sede) => s.id === selectedSedeForAlerts.id);
+        if (updatedSede) {
+          setSelectedSedeForAlerts(updatedSede);
+          if (activeSede?.id === updatedSede.id) {
+            setActiveSede(updatedSede);
+            setTrainAlerts(updatedSede.trainAlerts || []);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao excluir alerta:', err);
+    }
+  };
+
+  // Sede Actions
+  const handleSaveSede = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sedeNameInput.trim() || !sedeUrlInput.trim()) return;
+
+    setIsSavingSede(true);
+    setSedeError(null);
+
+    try {
+      const res = await fetch('/api/sedes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingSede?.id,
+          name: sedeNameInput.trim(),
+          folderUrl: sedeUrlInput.trim(),
+          description: sedeDescInput.trim(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setSedeError(data.error || 'Erro ao salvar sede.');
+      } else {
+        setSedes(data.sedes || []);
+        setIsSedeModalOpen(false);
+        setEditingSede(null);
+        setSedeNameInput('');
+        setSedeUrlInput('');
+        setSedeDescInput('');
+      }
+    } catch (err: any) {
+      setSedeError(err.message || 'Erro ao salvar sede.');
+    } finally {
+      setIsSavingSede(false);
+    }
+  };
+
+  const handleDeleteSede = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!confirm('Deseja realmente remover esta sede?')) return;
+
+    try {
+      const res = await fetch(`/api/sedes/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        const data = await res.json();
+        setSedes(data.sedes || []);
+        if (activeSede?.id === id) {
+          setActiveSede(null);
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao deletar sede:', err);
+    }
+  };
+
+  const handleOpenSedeSlideshow = (sede: Sede, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setActiveSede(sede);
+    fetchFiles(false, sede.id);
+    setSlideshowMode(true);
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+  };
+
+  const handleSelectSedeDashboard = (sede: Sede) => {
+    setActiveSede(sede);
+    fetchFiles(false, sede.id);
+  };
+
+  const handleCopySedeLink = (sede: Sede, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const url = `${window.location.origin}${window.location.pathname}?sede=${sede.id}&view=1&videofit=${videoFitMode}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedSedeId(sede.id);
+      setTimeout(() => setCopiedSedeId(null), 2500);
+    }).catch(err => console.error('Erro ao copiar link:', err));
+  };
+
+  const handleOpenCreateSedeModal = () => {
+    setEditingSede(null);
+    setSedeNameInput('');
+    setSedeUrlInput('');
+    setSedeDescInput('');
+    setSedeError(null);
+    setIsSedeModalOpen(true);
+  };
+
+  const handleOpenEditSedeModal = (sede: Sede, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setEditingSede(sede);
+    setSedeNameInput(sede.name);
+    setSedeUrlInput(sede.folderUrl);
+    setSedeDescInput(sede.description || '');
+    setSedeError(null);
+    setIsSedeModalOpen(true);
+  };
+
   // Trigger manual refresh
   const handleRefresh = async () => {
     setIsRefreshing(true);
     await fetchFiles(true);
     setTimeout(() => setIsRefreshing(false), 800);
   };
+
   // Load initial status and files
   useEffect(() => {
     fetchAuthStatus();
-    // Check URL for direct view mode
+    fetchSedes();
+    // Check URL for direct view mode or target sede
     const searchParams = new URLSearchParams(window.location.search);
-    if (searchParams.get('view') === '1' || searchParams.get('view') === 'true') {
+    const searchSede = searchParams.get('sede');
+    if (searchParams.get('view') === '1' || searchParams.get('view') === 'true' || searchSede) {
+      if (searchSede) {
+        fetchFiles(false, searchSede);
+      }
       setSlideshowMode(true);
       setIsDirectView(true);
       if (searchParams.has('speed')) setTransitionSpeed(Number(searchParams.get('speed')));
@@ -176,8 +498,18 @@ export default function App() {
       if (searchParams.has('ui')) setShowUiInSlideshow(searchParams.get('ui') === 'true');
       if (searchParams.has('refresh')) setAutoRefresh(searchParams.get('refresh') === 'true');
       if (searchParams.has('rate')) setAutoRefreshRate(Number(searchParams.get('rate')));
+      if (searchParams.has('videofit')) setVideoFitMode(searchParams.get('videofit') as any);
     }
-  }, [fetchAuthStatus]);
+  }, [fetchAuthStatus, fetchSedes]);
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsNativeFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
   useEffect(() => {
     fetchFiles();
   }, [authStatus.connected, authStatus.selectedFolder, authStatus.publicSharingUrl, fetchFiles]);
@@ -215,6 +547,20 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [slideshowMode, isDirectView]);
+  // Sync renderedIndex with currentSlideIndex via a smooth transition
+  useEffect(() => {
+    if (currentSlideIndex !== renderedIndex) {
+      setIsFadingOut(true);
+      const timer = setTimeout(() => {
+        setRenderedIndex(currentSlideIndex);
+        setIsFadingOut(false);
+      }, 400); // 400ms transition time for beautiful responsiveness
+      return () => clearTimeout(timer);
+    } else {
+      // In case they are already in sync (e.g., initial render)
+      setRenderedIndex(currentSlideIndex);
+    }
+  }, [currentSlideIndex, renderedIndex]);
   // Handle Slideshow Timing Loop
   const handleNextSlide = useCallback(() => {
     if (mediaFiles.length === 0) return;
@@ -246,6 +592,168 @@ export default function App() {
       if (autoPlayTimer.current) clearTimeout(autoPlayTimer.current);
     };
   }, [isPlaying, slideshowMode, transitionSpeed, currentSlideIndex, handleNextSlide, mediaFilesSignature]);
+
+  // Utility to resolve the fastest media URL (local blob URL if cached, remote downloadUrl if not yet cached)
+  const getMediaSrc = useCallback((file: MediaFile | undefined) => {
+    if (!file) return '';
+    if (!file.downloadUrl) return '';
+    return activeBlobUrls[file.downloadUrl] || file.downloadUrl;
+  }, [activeBlobUrls]);
+
+  // 1. Background Caching Effect: Proactively downloads all media files into Cache Storage
+  useEffect(() => {
+    if (mediaFiles.length === 0) return;
+    
+    let active = true;
+    const cacheStorageName = 'tv-slideshow-media-v1';
+    
+    const runBackgroundCaching = async () => {
+      if (typeof window === 'undefined' || !('caches' in window)) return;
+      
+      setDownloadProgress({ total: mediaFiles.length, loaded: 0 });
+      setDownloadStatus('downloading');
+      
+      try {
+        const cache = await caches.open(cacheStorageName);
+        let count = 0;
+        
+        // Count already cached files
+        for (const file of mediaFiles) {
+          if (!file.downloadUrl) continue;
+          const cachedResponse = await cache.match(file.downloadUrl);
+          if (cachedResponse) {
+            count++;
+          }
+        }
+        if (active) setDownloadProgress({ total: mediaFiles.length, loaded: count });
+        
+        // Download rest sequentially so we don't clog up TV network threads
+        for (const file of mediaFiles) {
+          if (!active) break;
+          if (!file.downloadUrl) continue;
+          
+          const cachedResponse = await cache.match(file.downloadUrl);
+          if (!cachedResponse) {
+            try {
+              const res = await fetch(file.downloadUrl);
+              if (res.ok) {
+                await cache.put(file.downloadUrl, res);
+                count++;
+                if (active) setDownloadProgress({ total: mediaFiles.length, loaded: count });
+              }
+            } catch (err) {
+              console.error('Failed to pre-cache file in background:', file.name, err);
+            }
+          }
+        }
+        
+        if (active) setDownloadStatus('completed');
+      } catch (err) {
+        console.error('Error in background caching:', err);
+        if (active) setDownloadStatus('error');
+      }
+    };
+    
+    runBackgroundCaching();
+    
+    return () => {
+      active = false;
+    };
+  }, [mediaFilesSignature]);
+
+  // 2. Active Slide Window Blob Manager: Generates blob URLs on-demand for current and adjacent slides
+  useEffect(() => {
+    if (mediaFiles.length === 0) return;
+    
+    let active = true;
+    const cacheStorageName = 'tv-slideshow-media-v1';
+    
+    const updateActiveBlobs = async () => {
+      if (typeof window === 'undefined' || !('caches' in window)) return;
+      
+      // We want to keep active blob URLs in RAM for current, next, and previous slides only
+      const indicesToLoad = new Set<number>();
+      indicesToLoad.add(renderedIndex);
+      indicesToLoad.add(currentSlideIndex);
+      indicesToLoad.add((currentSlideIndex + 1) % mediaFiles.length);
+      indicesToLoad.add((currentSlideIndex - 1 + mediaFiles.length) % mediaFiles.length);
+      
+      const neededUrls = new Set<string>();
+      indicesToLoad.forEach(idx => {
+        const file = mediaFiles[idx];
+        if (file && file.downloadUrl) {
+          neededUrls.add(file.downloadUrl);
+        }
+      });
+      
+      const cache = await caches.open(cacheStorageName);
+      const currentBlobs = activeBlobUrlsRef.current;
+      const newBlobUrls: Record<string, string> = {};
+      let hasChanges = false;
+      
+      // Revoke and clean up blob URLs that are no longer in our active sliding window (avoids RAM issues on Smart TVs)
+      for (const url of Object.keys(currentBlobs)) {
+        if (!neededUrls.has(url)) {
+          URL.revokeObjectURL(currentBlobs[url]);
+          hasChanges = true;
+        } else {
+          newBlobUrls[url] = currentBlobs[url];
+        }
+      }
+      
+      // Fetch or create Blob URLs for all active window items
+      for (const url of neededUrls) {
+        if (!newBlobUrls[url]) {
+          try {
+            let res = await cache.match(url);
+            if (!res) {
+              // Fallback fetch if background caching hasn't reached it yet
+              res = await fetch(url);
+              if (res.ok) {
+                await cache.put(url, res.clone());
+              }
+            }
+            if (res && res.ok) {
+              const blob = await res.blob();
+              const blobUrl = URL.createObjectURL(blob);
+              newBlobUrls[url] = blobUrl;
+              hasChanges = true;
+            }
+          } catch (err) {
+            console.error('Error generating active blob URL for:', url, err);
+          }
+        }
+      }
+      
+      if (active) {
+        activeBlobUrlsRef.current = newBlobUrls;
+        if (hasChanges) {
+          setActiveBlobUrls({ ...newBlobUrls });
+        }
+      }
+    };
+    
+    updateActiveBlobs();
+    
+    return () => {
+      active = false;
+    };
+  }, [renderedIndex, currentSlideIndex, mediaFilesSignature]);
+
+  // 3. Complete Cleanup on Unmount (prevents any memory leaks of Object URLs)
+  useEffect(() => {
+    return () => {
+      const currentBlobs = activeBlobUrlsRef.current;
+      for (const url of Object.keys(currentBlobs)) {
+        try {
+          URL.revokeObjectURL(currentBlobs[url]);
+        } catch (e) {
+          console.error('Failed to revoke URL on unmount:', e);
+        }
+      }
+    };
+  }, []);
+
   // Disconnect Google Drive
   const handleDisconnect = async () => {
     if (confirm('Tem certeza que deseja desconectar o Google Drive?')) {
@@ -375,6 +883,154 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* Sedes & Locais Manager Section */}
+          <section className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 sm:p-6 shadow-xl relative overflow-hidden" id="sedes-manager-section">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+              <div className="flex items-center space-x-3">
+                <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 rounded-xl">
+                  <Building2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-slate-100 text-lg flex items-center gap-2">
+                    <span>Minhas Sedes & Locais</span>
+                    <span className="text-xs font-mono font-normal bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/30">
+                      {sedes.length} {sedes.length === 1 ? 'sede' : 'sedes'}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Cadastre pastas de diferentes sedes e acesse a exibição de cada uma com 1 clique.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleOpenCreateSedeModal}
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl text-xs transition flex items-center justify-center space-x-2 shadow-lg hover:shadow-indigo-500/10 shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Cadastrar Nova Sede</span>
+              </button>
+            </div>
+
+            {/* Sedes Cards Grid */}
+            {sedes.length === 0 ? (
+              <div className="py-8 text-center flex flex-col items-center justify-center space-y-3 bg-slate-950/40 rounded-xl border border-dashed border-slate-800 mt-4">
+                <div className="p-3 bg-slate-800/60 rounded-full text-slate-400">
+                  <FolderPlus className="w-8 h-8" />
+                </div>
+                <div className="max-w-md">
+                  <h3 className="font-semibold text-slate-200 text-sm">Nenhuma sede cadastrada ainda</h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Adicione sua primeira sede e insira o link da pasta do Google Drive correspondente a ela.
+                  </p>
+                </div>
+                <button
+                  onClick={handleOpenCreateSedeModal}
+                  className="mt-2 px-4 py-2 bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-semibold transition flex items-center space-x-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Adicionar Primeira Sede</span>
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-5">
+                {sedes.map((s) => {
+                  const isCurrentActive = activeSede?.id === s.id;
+                  return (
+                    <div
+                      key={s.id}
+                      onClick={() => handleSelectSedeDashboard(s)}
+                      className={`group relative rounded-xl border p-4 transition-all duration-200 cursor-pointer flex flex-col justify-between ${
+                        isCurrentActive
+                          ? 'bg-indigo-950/30 border-indigo-500/50 shadow-md ring-1 ring-indigo-500/30'
+                          : 'bg-slate-950/60 hover:bg-slate-800/50 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center space-x-2.5">
+                            <div className={`p-2.5 rounded-lg border shrink-0 ${
+                              isCurrentActive 
+                                ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-300' 
+                                : 'bg-slate-800 border-slate-700 text-slate-300 group-hover:text-blue-400'
+                            }`}>
+                              <Folder className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <h3 className="font-bold text-slate-100 text-sm group-hover:text-white line-clamp-1">
+                                {s.name}
+                              </h3>
+                              {s.description && (
+                                <p className="text-[11px] text-slate-400 line-clamp-1 mt-0.5">
+                                  {s.description}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Edit & Delete Action Buttons */}
+                          <div className="flex items-center space-x-1 shrink-0 opacity-80 group-hover:opacity-100 transition">
+                            <button
+                              onClick={(e) => handleOpenEditSedeModal(s, e)}
+                              className="p-1.5 hover:bg-slate-700/80 text-slate-400 hover:text-slate-200 rounded-md transition"
+                              title="Editar Sede"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteSede(s.id, e)}
+                              className="p-1.5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-md transition"
+                              title="Excluir Sede"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Bottom Actions for Sede Card */}
+                      <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between gap-1.5 flex-wrap sm:flex-nowrap">
+                        <button
+                          onClick={(e) => handleOpenAlertsModal(s, e)}
+                          className="px-2.5 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-lg text-[11px] font-semibold transition flex items-center space-x-1.5 shrink-0"
+                          title="Gerenciar Alertas de Formação de Trens"
+                        >
+                          <Train className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Alertas ({s.trainAlerts ? s.trainAlerts.filter(a => a.active !== false).length : 0})</span>
+                        </button>
+
+                        <button
+                          onClick={(e) => handleCopySedeLink(s, e)}
+                          className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/60 rounded-lg text-[11px] font-semibold transition flex items-center space-x-1 shrink-0"
+                          title="Copiar Link de Exibição Direta para Smart TV"
+                        >
+                          {copiedSedeId === s.id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span className="text-emerald-400 font-bold">Copiado!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Link TV</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={(e) => handleOpenSedeSlideshow(s, e)}
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg text-xs transition flex items-center space-x-1.5 shadow shrink-0"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>Exibir</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
           {/* Core App Grid: 1/3 Controls and 2/3 List & Slider */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start" id="app-grid">
             {/* Col 1: Configuration & Settings panel (4 Cols) */}
@@ -408,6 +1064,42 @@ export default function App() {
                       {mediaFiles.length}
                     </span>
                   </div>
+                </div>
+                {/* Offline Cache Status */}
+                <div className="mt-4 bg-slate-950/40 rounded-xl p-3 border border-slate-800/80 flex items-center justify-between" id="offline-cache-status-widget">
+                  <div className="flex items-center space-x-2.5">
+                    {downloadStatus === 'downloading' ? (
+                      <div className="p-1.5 bg-blue-500/10 text-blue-400 rounded-lg animate-bounce shrink-0">
+                        <Cloud className="w-4 h-4" />
+                      </div>
+                    ) : downloadStatus === 'completed' ? (
+                      <div className="p-1.5 bg-emerald-500/10 text-emerald-400 rounded-lg shrink-0">
+                        <Check className="w-4 h-4" />
+                      </div>
+                    ) : (
+                      <div className="p-1.5 bg-slate-800 text-slate-400 rounded-lg shrink-0">
+                        <Cloud className="w-4 h-4" />
+                      </div>
+                    )}
+                    <div>
+                      <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">Suporte Offline (TV/Celular)</span>
+                      <span className="text-xs text-slate-300 font-semibold">
+                        {downloadStatus === 'downloading' 
+                          ? `Baixando vídeos: ${downloadProgress.loaded}/${downloadProgress.total}`
+                          : downloadStatus === 'completed'
+                            ? `Tudo baixado para offline (${downloadProgress.total}/${downloadProgress.total})`
+                            : 'Aguardando sincronização...'}
+                      </span>
+                    </div>
+                  </div>
+                  {downloadStatus === 'downloading' && (
+                    <div className="w-12 bg-slate-800 h-1.5 rounded-full overflow-hidden shrink-0">
+                      <div 
+                        className="bg-blue-500 h-full transition-all duration-300"
+                        style={{ width: `${(downloadProgress.loaded / (downloadProgress.total || 1)) * 100}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
                 {/* Public Link Integration */}
                 <div className="my-5 pb-4 border-b border-slate-800/80">
@@ -482,6 +1174,7 @@ export default function App() {
                       url.searchParams.set('ui', showUiInSlideshow.toString());
                       url.searchParams.set('refresh', autoRefresh.toString());
                       url.searchParams.set('rate', autoRefreshRate.toString());
+                      url.searchParams.set('videofit', videoFitMode);
                       navigator.clipboard.writeText(url.toString());
                       alert('Link copiado para a área de transferência! Envie para quem você quiser para acessar diretamente no modo de visualização com as configurações atuais.');
                     }}
@@ -504,8 +1197,8 @@ export default function App() {
                 {/* Slide Transition Speed */}
                 <div className="space-y-2">
                   <label className="text-xs text-slate-400 font-semibold block">Tempo de Transição</label>
-                  <div className="grid grid-cols-5 gap-1.5">
-                    {[3000, 5000, 10000, 30000, 120000].map((speed) => (
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+                    {[5000, 10000, 30000, 60000, 90000, 120000].map((speed) => (
                       <button
                         key={speed}
                         onClick={() => setTransitionSpeed(speed)}
@@ -515,7 +1208,7 @@ export default function App() {
                             : 'bg-slate-950 text-slate-400 border border-slate-800 hover:bg-slate-800'
                         }`}
                       >
-                        {speed >= 60000 ? `${speed / 60000}m` : `${speed / 1000}s`}
+                        {speed === 5000 ? '5s' : speed === 10000 ? '10s' : speed === 30000 ? '30s' : speed === 60000 ? '60s' : speed === 90000 ? '90s' : '120s'}
                       </button>
                     ))}
                   </div>
@@ -535,6 +1228,32 @@ export default function App() {
                         }`}
                       >
                         {effect === 'fade' ? 'Suave' : effect === 'zoom' ? 'Zoom' : 'Slide'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Video Fit Mode */}
+                <div className="space-y-2">
+                  <label className="text-xs text-slate-400 font-semibold flex items-center justify-between">
+                    <span>Ajuste do Vídeo (Tela Cheia)</span>
+                    <span className="text-[10px] text-cyan-400 font-mono font-bold uppercase">{videoFitMode}</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { id: 'cover', label: 'Preencher Tela' },
+                      { id: 'fill', label: 'Esticar' },
+                      { id: 'contain', label: 'Proporcional' },
+                    ].map((fit) => (
+                      <button
+                        key={fit.id}
+                        onClick={() => setVideoFitMode(fit.id as any)}
+                        className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition ${
+                          videoFitMode === fit.id 
+                            ? 'bg-indigo-600 text-white shadow-sm' 
+                            : 'bg-slate-950 text-slate-400 border border-slate-800 hover:bg-slate-800'
+                        }`}
+                      >
+                        {fit.label}
                       </button>
                     ))}
                   </div>
@@ -602,34 +1321,64 @@ export default function App() {
                   <>
                     {/* Live Slide */}
                     <div className="flex-1 bg-slate-950 relative overflow-hidden flex items-center justify-center">
-                      {mediaFiles[currentSlideIndex]?.isVideo ? (
-                        <video
-                          src={mediaFiles[currentSlideIndex]?.downloadUrl || ''}
-                          className="max-h-full max-w-full object-contain transition-all duration-500 bg-black"
-                          autoPlay
-                          controls
-                          muted
-                          playsInline
-                          loop
-                        />
-                      ) : mediaFiles[currentSlideIndex]?.isPdf ? (
-                        <iframe
-                          src={mediaFiles[currentSlideIndex]?.downloadUrl}
-                          className="w-full h-full border-none bg-white transition-all duration-500"
-                        />
-                      ) : (
-                        <img
-                          src={mediaFiles[currentSlideIndex]?.downloadUrl || '/placeholder.jpg'}
-                          alt={mediaFiles[currentSlideIndex]?.name}
-                          className="max-h-full max-w-full object-contain transition-all duration-500"
-                          id="preview-img-tag"
-                        />
-                      )}
+                      <div
+                        className={`absolute inset-0 flex items-center justify-center transition-all duration-500 ease-in-out ${
+                          isFadingOut ? 'opacity-0 scale-95 blur-sm' : 'opacity-100 scale-100 blur-none'
+                        }`}
+                        style={{
+                          transform: !isFadingOut && transitionEffect === 'zoom' ? 'scale(1.02)' : undefined,
+                        }}
+                      >
+                        {mediaFiles[renderedIndex]?.isVideo ? (
+                          <video
+                            key={getMediaSrc(mediaFiles[renderedIndex])}
+                            src={getMediaSrc(mediaFiles[renderedIndex])}
+                            className={`bg-black ${
+                              videoFitMode === 'cover' 
+                                ? 'w-full h-full object-cover' 
+                                : videoFitMode === 'fill' 
+                                ? 'w-full h-full object-fill' 
+                                : 'max-h-full max-w-full object-contain'
+                            }`}
+                            autoPlay
+                            controls
+                            playsInline
+                            muted={videoMuted}
+                            onCanPlay={(e) => {
+                              const video = e.currentTarget;
+                              const playPromise = video.play();
+                              if (playPromise !== undefined) {
+                                playPromise.catch(err => {
+                                  console.warn("Preview video autoplay unmuted blocked, falling back to muted:", err);
+                                  setVideoMuted(true);
+                                  video.muted = true;
+                                  video.play().catch(err2 => {
+                                    console.error("Preview video muted playback failed:", err2);
+                                  });
+                                });
+                              }
+                            }}
+                            onEnded={handleNextSlide}
+                          />
+                        ) : mediaFiles[renderedIndex]?.isPdf ? (
+                          <iframe
+                            src={getMediaSrc(mediaFiles[renderedIndex])}
+                            className="w-full h-full border-none bg-white"
+                          />
+                        ) : (
+                          <img
+                            src={getMediaSrc(mediaFiles[renderedIndex]) || '/placeholder.jpg'}
+                            alt={mediaFiles[renderedIndex]?.name}
+                            className="max-h-full max-w-full object-contain"
+                            id="preview-img-tag"
+                          />
+                        )}
+                      </div>
                       {/* Dark overlay gradients */}
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent p-4 flex flex-col justify-end" id="preview-text-overlay">
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent p-4 flex flex-col justify-end z-10" id="preview-text-overlay">
                         <span className="text-[11px] font-mono uppercase text-blue-400 tracking-wider">Miniatura de Slideshow</span>
                         <h4 className="font-bold text-slate-100 text-sm sm:text-base line-clamp-1 mt-0.5">
-                          {mediaFiles[currentSlideIndex]?.name}
+                          {mediaFiles[renderedIndex]?.name}
                         </h4>
                       </div>
                     </div>
@@ -768,42 +1517,94 @@ export default function App() {
         </main>
       ) : (
         // 3. IMMERSIVE FULL-SCREEN PORTRAIT SLIDESHOW SCREEN
-        <div className="fixed inset-0 bg-black z-50 flex flex-col justify-between select-none overflow-hidden" id="full-slideshow-canvas">
+        <div 
+          className="fixed inset-0 bg-black z-50 flex flex-col justify-between select-none overflow-hidden cursor-pointer" 
+          id="full-slideshow-canvas"
+          onClick={() => {
+            if (videoMuted) {
+              setVideoMuted(false);
+            }
+          }}
+        >
           {mediaFiles.length > 0 ? (
             <div className="absolute inset-0 flex items-center justify-center bg-black">
+              {/* Autoplay blocked sound fallback indicator */}
+              {videoMuted && mediaFiles[renderedIndex]?.isVideo && (
+                <div 
+                  className="absolute top-6 right-6 z-50 bg-indigo-600/90 hover:bg-indigo-500 text-white px-5 py-3 rounded-2xl shadow-2xl backdrop-blur-md flex items-center space-x-3 animate-bounce border border-indigo-400/30 cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setVideoMuted(false);
+                  }}
+                >
+                  <VolumeX className="w-5 h-5 text-white animate-pulse" />
+                  <div className="flex flex-col">
+                    <span className="font-bold text-xs tracking-wide">Vídeo silenciado pelo navegador</span>
+                    <span className="text-[10px] text-indigo-200">Toque aqui para ativar o som 🔊</span>
+                  </div>
+                </div>
+              )}
               {/* Dynamic transitions mapped with custom animations */}
               <div 
-                className="absolute inset-0 flex items-center justify-center p-2 sm:p-4 transition-all duration-1000 ease-in-out"
+                className={`absolute inset-0 flex items-center justify-center ${
+                  mediaFiles[renderedIndex]?.isVideo && videoFitMode !== 'contain' ? 'p-0' : 'p-2 sm:p-4'
+                } transition-all duration-500 ease-in-out ${
+                  isFadingOut 
+                    ? 'opacity-0 blur-sm' 
+                    : 'opacity-100 blur-none'
+                }`}
                 style={{
-                  transform: transitionEffect === 'zoom' ? 'scale(1.02)' : 'none',
+                  transform: isFadingOut
+                    ? (transitionEffect === 'zoom' ? 'scale(0.95)' : transitionEffect === 'slide' ? 'translateX(-30px)' : 'none')
+                    : (transitionEffect === 'zoom' ? 'scale(1.02)' : 'none'),
                 }}
-                key={currentSlideIndex} // Triggers react re-mount to run entry transitions smoothly
               >
-                {mediaFiles[currentSlideIndex]?.isVideo ? (
+                {mediaFiles[renderedIndex]?.isVideo ? (
                   <video
-                    src={mediaFiles[currentSlideIndex]?.downloadUrl || ''}
-                    className="max-h-full max-w-full object-contain animate-fadeIn shadow-2xl bg-black"
+                    key={getMediaSrc(mediaFiles[renderedIndex])}
+                    src={getMediaSrc(mediaFiles[renderedIndex])}
+                    className={`shadow-2xl bg-black ${
+                      videoFitMode === 'cover' 
+                        ? 'w-full h-full object-cover' 
+                        : videoFitMode === 'fill' 
+                        ? 'w-full h-full object-fill' 
+                        : 'max-h-full max-w-full object-contain'
+                    }`}
                     autoPlay
                     controls
-                    muted
                     playsInline
-                    onEnded={isPlaying ? handleNextSlide : undefined}
+                    muted={videoMuted}
+                    onCanPlay={(e) => {
+                      const video = e.currentTarget;
+                      const playPromise = video.play();
+                      if (playPromise !== undefined) {
+                        playPromise.catch(err => {
+                          console.warn("Fullscreen video autoplay unmuted blocked, falling back to muted:", err);
+                          setVideoMuted(true);
+                          video.muted = true;
+                          video.play().catch(err2 => {
+                            console.error("Fullscreen video muted playback failed:", err2);
+                          });
+                        });
+                      }
+                    }}
+                    onEnded={handleNextSlide}
                     onError={(e) => {
                       console.error('Video error:', e);
                       // Skip to next slide if video fails
                       if (isPlaying) setTimeout(handleNextSlide, 3000);
                     }}
                   />
-                ) : mediaFiles[currentSlideIndex]?.isPdf ? (
+                ) : mediaFiles[renderedIndex]?.isPdf ? (
                   <iframe
-                    src={mediaFiles[currentSlideIndex]?.downloadUrl}
-                    className="w-full h-full border-none bg-white animate-fadeIn shadow-2xl"
+                    src={getMediaSrc(mediaFiles[renderedIndex])}
+                    className="w-full h-full border-none bg-white shadow-2xl"
                   />
                 ) : (
                   <img
-                    src={mediaFiles[currentSlideIndex]?.downloadUrl || '/placeholder.jpg'}
-                    alt={mediaFiles[currentSlideIndex]?.name}
-                    className="max-h-full max-w-full object-contain animate-fadeIn shadow-2xl"
+                    src={getMediaSrc(mediaFiles[renderedIndex]) || '/placeholder.jpg'}
+                    alt={mediaFiles[renderedIndex]?.name}
+                    className="max-h-full max-w-full object-contain shadow-2xl"
                     id="active-slideshow-img"
                   />
                 )}
@@ -811,11 +1612,56 @@ export default function App() {
               {/* Preload Next Media */}
               <div className="hidden" aria-hidden="true" style={{ display: 'none' }}>
                 {mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.isVideo ? (
-                  <video src={mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.downloadUrl || ''} preload="metadata" muted />
+                  <video src={getMediaSrc(mediaFiles[(currentSlideIndex + 1) % mediaFiles.length])} preload="auto" muted playsInline />
                 ) : (
-                  <img src={mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.downloadUrl || ''} />
+                  <img src={getMediaSrc(mediaFiles[(currentSlideIndex + 1) % mediaFiles.length])} />
                 )}
               </div>
+              {/* Train Formation Alerts Ticker Overlay in Slideshow */}
+              {showTrainAlertsTicker && trainAlerts.length > 0 && (
+                <div className="absolute top-4 left-4 z-40 max-w-lg sm:max-w-xl md:max-w-2xl bg-slate-950/90 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-amber-500/40 shadow-2xl flex items-center space-x-3 text-white animate-fadeIn">
+                  <div className="flex items-center space-x-2 shrink-0 pr-3 border-r border-slate-800">
+                    <div className="p-1.5 bg-amber-500/20 text-amber-400 rounded-lg animate-pulse border border-amber-500/30">
+                      <Train className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-[9px] uppercase font-bold tracking-wider text-amber-400 block font-mono">
+                        Formação de Trens
+                      </span>
+                      <span className="text-xs font-bold text-slate-200 truncate max-w-[110px] sm:max-w-none block">
+                        {resolvedFolderName || activeSede?.name || 'Sede'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2 overflow-x-auto no-scrollbar py-0.5">
+                    {trainAlerts.filter(a => a.active !== false).length === 0 ? (
+                      <span className="text-xs text-slate-400 italic">Nenhum alerta ativo</span>
+                    ) : (
+                      trainAlerts.filter(a => a.active !== false).map((alert) => (
+                        <div 
+                          key={alert.id} 
+                          className="flex items-center space-x-2 bg-slate-900/90 border border-slate-800 px-3 py-1.5 rounded-xl shrink-0 shadow-sm"
+                        >
+                          <span className="text-xs font-black font-mono text-amber-300 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                            {alert.prefix}
+                          </span>
+                          <span className="text-xs font-mono font-bold text-slate-100 flex items-center">
+                            <Clock className="w-3 h-3 text-slate-400 mr-1" />
+                            {alert.time}
+                          </span>
+                          {alert.status && (
+                            <span className="text-[10px] font-semibold text-cyan-300 bg-cyan-500/10 px-2 py-0.5 rounded-full border border-cyan-500/20">
+                              {alert.status}
+                            </span>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Bottom/Top Overlays */}
               {kpcData && (
                 <div className="absolute top-6 left-1/2 -translate-x-1/2 z-40 bg-red-600/90 text-white px-6 py-3 rounded-2xl shadow-2xl backdrop-blur-md flex items-center space-x-4 animate-fadeIn border border-red-500/50">
@@ -830,22 +1676,22 @@ export default function App() {
                 </div>
               )}
               <div 
-                className={`absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-6 sm:p-10 flex flex-col sm:flex-row sm:items-end justify-between space-y-4 sm:space-y-0 transition-opacity duration-500 ${
+                className={`absolute inset-x-0 bottom-0 z-30 bg-transparent p-6 sm:p-10 flex flex-col sm:flex-row sm:items-end justify-between space-y-4 sm:space-y-0 transition-opacity duration-500 ${
                   showUiInSlideshow ? 'opacity-100' : 'opacity-0 hover:opacity-100'
                 }`}
                 id="slideshow-hud-overlay"
               >
                 {/* Filename caption */}
                 {showFileName ? (
-                  <div className="max-w-2xl">
+                  <div className="max-w-2xl bg-black/40 backdrop-blur-md px-5 py-3.5 rounded-2xl border border-white/5 shadow-inner">
                     <span className="text-xs text-blue-400 font-mono tracking-wider block uppercase mb-1">
                       {resolvedFolderName || authStatus.selectedFolder?.name || 'OneDrive Live Panel'}
                     </span>
                     <h2 className="text-lg sm:text-2xl font-bold text-slate-100 line-clamp-1">
-                      {mediaFiles[currentSlideIndex]?.name}
+                      {mediaFiles[renderedIndex]?.name}
                     </h2>
                     <p className="text-xs text-slate-400 font-mono mt-1">
-                      Atualizado em: {new Date(mediaFiles[currentSlideIndex]?.lastModified).toLocaleString('pt-BR')} • {formatBytes(mediaFiles[currentSlideIndex]?.size)}
+                      Atualizado em: {new Date(mediaFiles[renderedIndex]?.lastModified).toLocaleString('pt-BR')} • {formatBytes(mediaFiles[renderedIndex]?.size)}
                     </p>
                   </div>
                 ) : (
@@ -854,6 +1700,26 @@ export default function App() {
                 {/* Clock Overlay */}
                 {showClock && (
                   <div className="flex items-center space-x-3.5 bg-black/40 backdrop-blur-md px-5 py-2.5 rounded-2xl border border-white/5 shadow-inner shrink-0 sm:self-end">
+                    {/* Offline Indicator inside Clock Card */}
+                    <div className="flex flex-col items-end border-r border-white/10 pr-3.5 mr-1 hidden sm:flex">
+                      <span className="text-[9px] text-slate-500 uppercase tracking-wider font-mono font-bold">
+                        Cache Local (TV)
+                      </span>
+                      <span className={`text-[11px] font-mono font-semibold flex items-center space-x-1 ${downloadStatus === 'completed' ? 'text-emerald-400' : 'text-blue-400'}`}>
+                        {downloadStatus === 'downloading' ? (
+                          <>
+                            <Cloud className="w-3.5 h-3.5 animate-bounce mr-1" />
+                            <span>Baixando {downloadProgress.loaded}/{downloadProgress.total}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-3.5 h-3.5 mr-1" />
+                            <span>Sincronizado</span>
+                          </>
+                        )}
+                      </span>
+                    </div>
+
                     <Clock className="w-5 h-5 text-blue-400 animate-spin" style={{ animationDuration: '6s' }} />
                     <div className="text-right">
                       <span className="text-xl sm:text-2xl font-mono font-bold tracking-wider text-slate-200">
@@ -873,6 +1739,33 @@ export default function App() {
                 }`}
                 id="slideshow-hud-top"
               >
+                <button
+                  onClick={() => setShowTrainAlertsTicker(!showTrainAlertsTicker)}
+                  className={`p-2 hover:bg-white/10 rounded-lg transition ${
+                    showTrainAlertsTicker ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400'
+                  }`}
+                  title={showTrainAlertsTicker ? 'Ocultar Alertas de Trens' : 'Exibir Alertas de Trens'}
+                >
+                  <Train className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => {
+                    const nextMode = videoFitMode === 'cover' ? 'fill' : videoFitMode === 'fill' ? 'contain' : 'cover';
+                    setVideoFitMode(nextMode);
+                  }}
+                  className="p-2 hover:bg-white/10 rounded-lg text-slate-300 hover:text-white transition flex items-center space-x-1"
+                  title={`Enquadramento do Vídeo: ${videoFitMode === 'cover' ? 'Preencher Tela (Cover)' : videoFitMode === 'fill' ? 'Esticar (Fill)' : 'Proporcional (Contain)'}`}
+                >
+                  <Scaling className="w-4 h-4 text-cyan-400" />
+                  <span className="text-[10px] uppercase font-mono hidden sm:inline text-cyan-300 font-bold">{videoFitMode}</span>
+                </button>
+                <button
+                  onClick={toggleNativeFullscreen}
+                  className="p-2 hover:bg-white/10 rounded-lg text-slate-300 hover:text-white transition"
+                  title={isNativeFullscreen ? 'Sair da Tela Cheia do Navegador' : 'Tela Cheia do Navegador'}
+                >
+                  {isNativeFullscreen ? <Minimize className="w-4 h-4 text-indigo-400" /> : <Maximize className="w-4 h-4 text-indigo-400" />}
+                </button>
                 <button
                   onClick={() => setIsPlaying(!isPlaying)}
                   className="p-2 hover:bg-white/10 rounded-lg text-slate-300 hover:text-white transition"
@@ -1094,6 +1987,288 @@ export default function App() {
           </div>
         </div>
       )}
+      {/* Sede Creation / Edition Modal */}
+      {isSedeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl p-6 relative animate-in fade-in zoom-in duration-200">
+            <button
+              onClick={() => setIsSedeModalOpen(false)}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center space-x-3 mb-5">
+              <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 rounded-xl">
+                <Building2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-100">
+                  {editingSede ? 'Editar Sede' : 'Cadastrar Nova Sede'}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Associe um nome de identificação ao link da pasta de mídia no Google Drive.
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveSede} className="space-y-4">
+              {sedeError && (
+                <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-3 text-rose-300 text-xs flex items-center space-x-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{sedeError}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Nome da Sede *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Sede Matriz, Filial SP, Sede Centro..."
+                  value={sedeNameInput}
+                  onChange={(e) => setSedeNameInput(e.target.value)}
+                  className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Link da Pasta do Google Drive *
+                </label>
+                <input
+                  type="url"
+                  required
+                  placeholder="https://drive.google.com/drive/folders/..."
+                  value={sedeUrlInput}
+                  onChange={(e) => setSedeUrlInput(e.target.value)}
+                  className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Certifique-se de que a pasta no Google Drive tem permissão "Qualquer pessoa com o link pode ver".
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1">
+                  Descrição / Local do Monitor (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: TV da Recepção Principal, Painel da Entrada..."
+                  value={sedeDescInput}
+                  onChange={(e) => setSedeDescInput(e.target.value)}
+                  className="w-full text-xs bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-slate-800 flex justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => setIsSedeModalOpen(false)}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-xs transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingSede || !sedeNameInput.trim() || !sedeUrlInput.trim()}
+                  className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white font-bold rounded-xl text-xs transition shadow-lg"
+                >
+                  {isSavingSede ? 'Salvando...' : editingSede ? 'Atualizar Sede' : 'Salvar Sede'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Gerenciador de Alertas de Formação de Trens */}
+      {isAlertsModalOpen && selectedSedeForAlerts && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl shadow-2xl p-6 relative animate-in fade-in zoom-in duration-200">
+            <button
+              onClick={() => setIsAlertsModalOpen(false)}
+              className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center space-x-3 mb-5 pb-4 border-b border-slate-800">
+              <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl">
+                <Train className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-100 flex items-center space-x-2">
+                  <span>Alertas de Formação de Trens</span>
+                </h3>
+                <p className="text-xs text-amber-300 font-medium">
+                  Sede: <span className="font-bold text-white">{selectedSedeForAlerts.name}</span>
+                </p>
+              </div>
+            </div>
+
+            {/* Add New Alert Form */}
+            <form onSubmit={handleAddAlertToSede} className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 mb-5 space-y-3">
+              <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
+                <Plus className="w-3.5 h-3.5 text-amber-400" />
+                <span>Cadastrar Novo Alerta</span>
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-400 block mb-1">
+                    Prefixo / Composição *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: TR-102, K-88, V-401..."
+                    value={alertPrefixInput}
+                    onChange={(e) => setAlertPrefixInput(e.target.value)}
+                    className="w-full text-xs bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-200 uppercase font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-400 block mb-1">
+                    Horário Programado *
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={alertTimeInput}
+                    onChange={(e) => setAlertTimeInput(e.target.value)}
+                    className="w-full text-xs bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-semibold text-slate-400 block mb-1">
+                  Status / Observação
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Formação Prevista, Em Pátio A, Pronto..."
+                  value={alertStatusInput}
+                  onChange={(e) => setAlertStatusInput(e.target.value)}
+                  className="w-full text-xs bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-amber-500/50"
+                />
+                
+                {/* Status Presets */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {['Formação Prevista', 'Em Pátio', 'Manobra', 'Pronto p/ Partida', 'Aguardando Maquinista', 'Liberado'].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setAlertStatusInput(preset)}
+                      className={`text-[10px] px-2 py-0.5 rounded-md border transition ${
+                        alertStatusInput === preset 
+                          ? 'bg-amber-500/20 border-amber-500/40 text-amber-300 font-bold'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-1 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={isSavingAlerts || !alertPrefixInput.trim() || !alertTimeInput.trim()}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 text-white font-bold rounded-lg text-xs transition shadow flex items-center space-x-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Adicionar Alerta</span>
+                </button>
+              </div>
+            </form>
+
+            {/* List of Current Alerts */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+                <span>Alertas Cadastrados ({selectedSedeForAlerts.trainAlerts?.length || 0})</span>
+                <span className="text-[10px] text-slate-500 font-normal">Exibidos em tempo real no painel</span>
+              </h4>
+
+              {(!selectedSedeForAlerts.trainAlerts || selectedSedeForAlerts.trainAlerts.length === 0) ? (
+                <div className="p-6 text-center text-xs text-slate-500 bg-slate-950/40 rounded-xl border border-dashed border-slate-800">
+                  Nenhum alerta de trem cadastrado para esta sede ainda. Adicione o primeiro no formulário acima.
+                </div>
+              ) : (
+                <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                  {selectedSedeForAlerts.trainAlerts.map((alert) => (
+                    <div
+                      key={alert.id}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
+                        alert.active !== false 
+                          ? 'bg-slate-950 border-slate-800' 
+                          : 'bg-slate-950/40 border-slate-900 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center space-x-3">
+                        <span className="text-xs font-black font-mono text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg">
+                          {alert.prefix}
+                        </span>
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <span className="text-xs font-bold font-mono text-slate-200">
+                              🕒 {alert.time}
+                            </span>
+                            {alert.status && (
+                              <span className="text-[10px] font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded-full">
+                                {alert.status}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAlertStatus(alert.id)}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition ${
+                            alert.active !== false 
+                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                              : 'bg-slate-800 border-slate-700 text-slate-400'
+                          }`}
+                        >
+                          {alert.active !== false ? 'Ativo' : 'Pausado'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAlert(alert.id)}
+                          className="p-1.5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg transition"
+                          title="Excluir Alerta"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-4 mt-5 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsAlertsModalOpen(false)}
+                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-xs transition"
+              >
+                Concluído
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* FOOTER */}
       {!slideshowMode && (
         <footer className="border-t border-slate-900 bg-slate-950 py-5 px-4 text-center text-xs text-slate-500" id="app-footer">
