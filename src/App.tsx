@@ -172,31 +172,133 @@ export default function App() {
   const clockTimer = useRef<NodeJS.Timeout | null>(null);
   // Filter files to images/videos only for the slideshow
   const mediaFiles = useMemo(() => files.filter(f => f.isImage || f.isVideo || f.isPdf), [files]);
-  // KPC Timer Logic
-  const kpcData = useMemo(() => {
+  // State for simulated/preview alert mode in modal or dashboard
+  const [isTestingAlert, setIsTestingAlert] = useState(false);
+
+  // KPC Fixed Train Formation Schedule (12:00, 17:00, 19:50)
+  const kpcAlerts = useMemo<TrainAlert[]>(() => [
+    { id: 'kpc-1200', prefix: 'FORMAÇÃO KPC 12H', time: '12:00', status: 'Partida Programada', active: true },
+    { id: 'kpc-1700', prefix: 'FORMAÇÃO KPC 17H', time: '17:00', status: 'Partida Programada', active: true },
+    { id: 'kpc-1950', prefix: 'FORMAÇÃO KPC 19:50H', time: '19:50', status: 'Partida Programada', active: true },
+  ], []);
+
+  // Helper to calculate exact remaining time for a train alert
+  const getAlertTimeRemaining = useCallback((timeStr: string) => {
+    if (!timeStr) return null;
+    const parts = timeStr.trim().split(':');
+    if (parts.length < 2) return null;
+    const targetHours = parseInt(parts[0], 10);
+    const targetMinutes = parseInt(parts[1], 10);
+    if (isNaN(targetHours) || isNaN(targetMinutes)) return null;
+
     const now = new Date();
-    const currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    const currentTotalMinutes = currentHour * 60 + currentMinute;
-    const getRemainingTime = (targetHour: number, targetMinute: number) => {
-      const targetDate = new Date(now);
-      targetDate.setHours(targetHour, targetMinute, 0, 0);
-      const diffSeconds = Math.floor((targetDate.getTime() - now.getTime()) / 1000);
-      if (diffSeconds <= 0) return '00:00:00';
-      const h = Math.floor(diffSeconds / 3600);
-      const m = Math.floor((diffSeconds % 3600) / 60);
-      const s = diffSeconds % 60;
-      return `${h > 0 ? h.toString().padStart(2, '0') + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), targetHours, targetMinutes, 0, 0);
+
+    let diffMs = target.getTime() - now.getTime();
+
+    // Midnight crossing adjustment
+    if (diffMs < -12 * 60 * 60 * 1000) {
+      target.setDate(target.getDate() + 1);
+      diffMs = target.getTime() - now.getTime();
+    } else if (diffMs > 12 * 60 * 60 * 1000) {
+      target.setDate(target.getDate() - 1);
+      diffMs = target.getTime() - now.getTime();
+    }
+
+    const totalSeconds = Math.floor(diffMs / 1000);
+    // STRICT 15-MINUTE RULE: Urgent ONLY when <= 15 minutes remaining (900s) and up to 3 minutes past departure (-180s)
+    const isUrgent = totalSeconds >= -180 && totalSeconds <= 15 * 60;
+
+    const absSecs = Math.abs(totalSeconds);
+    const mins = Math.floor(absSecs / 60);
+    const secs = absSecs % 60;
+    const formattedCountdown = `${totalSeconds < 0 ? '-' : ''}${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+    return {
+      totalSeconds,
+      mins,
+      secs,
+      formattedCountdown,
+      isUrgent,
+      targetTimeString: timeStr
     };
-    if (currentTotalMinutes >= 10 * 60 + 30 && currentTotalMinutes < 12 * 60) {
-      return { message: "Atenção para a formação do KPC das 12h", timer: getRemainingTime(12, 0) };
-    } else if (currentTotalMinutes >= 15 * 60 && currentTotalMinutes < 17 * 60) {
-      return { message: "Atenção para a formação do KPC das 17h", timer: getRemainingTime(17, 0) };
-    } else if (currentTotalMinutes >= 17 * 60 + 30 && currentTotalMinutes < 19 * 60 + 50) {
-      return { message: "Atenção para a formação do KPC das 19:50h", timer: getRemainingTime(19, 50) };
+  }, []);
+
+  // Consolidate all train alerts across loaded alerts, active Sede, all Sedes, and KPC schedule
+  const allActiveTrainAlerts = useMemo(() => {
+    const map = new Map<string, TrainAlert>();
+
+    // 1. KPC Fixed Schedule
+    kpcAlerts.forEach(a => map.set(a.id, a));
+
+    // 2. All Sedes
+    (sedes || []).forEach(s => {
+      (s.trainAlerts || []).forEach(a => {
+        if (a && a.id) map.set(a.id, a);
+      });
+    });
+
+    // 3. Active Sede
+    (activeSede?.trainAlerts || []).forEach(a => {
+      if (a && a.id) map.set(a.id, a);
+    });
+
+    // 4. Current trainAlerts state
+    (trainAlerts || []).forEach(a => {
+      if (a && a.id) map.set(a.id, a);
+    });
+
+    return Array.from(map.values());
+  }, [trainAlerts, activeSede, sedes, kpcAlerts]);
+
+  // Compute active train alerts that are strictly in the urgent 15-minute window
+  const urgentAlerts = useMemo(() => {
+    // If user clicked simulation preview, generate a test alert
+    if (isTestingAlert) {
+      return [{
+        alert: {
+          id: 'test-preview',
+          prefix: 'TREM-TESTE 15MIN',
+          time: '14:30',
+          status: 'TESTE DE TELA CHEIA (15 MINUTOS)',
+          active: true
+        },
+        remaining: {
+          totalSeconds: 840, // 14 mins remaining
+          mins: 14,
+          secs: 0,
+          formattedCountdown: '14:00',
+          isUrgent: true,
+          targetTimeString: '14:30'
+        }
+      }];
+    }
+
+    if (allActiveTrainAlerts.length === 0) return [];
+
+    return allActiveTrainAlerts
+      .filter(a => a.active !== false)
+      .map(alert => {
+        const remaining = getAlertTimeRemaining(alert.time);
+        return { alert, remaining };
+      })
+      .filter((item): item is { alert: TrainAlert; remaining: NonNullable<ReturnType<typeof getAlertTimeRemaining>> } => 
+        item.remaining !== null && item.remaining.isUrgent
+      )
+      .sort((a, b) => a.remaining.totalSeconds - b.remaining.totalSeconds);
+  }, [allActiveTrainAlerts, currentTime, getAlertTimeRemaining, isTestingAlert]);
+
+  // KPC Banner only when in 15-minute window
+  const kpcData = useMemo(() => {
+    const kpcUrgent = urgentAlerts.find(u => u.alert.id.startsWith('kpc-'));
+    if (kpcUrgent) {
+      return {
+        message: `Atenção: ${kpcUrgent.alert.prefix} em ${kpcUrgent.remaining.mins} min!`,
+        timer: kpcUrgent.remaining.formattedCountdown
+      };
     }
     return null;
-  }, [currentTime]); // recompute every second as currentTime changes
+  }, [urgentAlerts]);
 
   // Fetch Sedes
   const fetchSedes = useCallback(async () => {
@@ -884,6 +986,40 @@ export default function App() {
             </div>
           )}
 
+          {/* Urgent Train Departure Banner on Dashboard */}
+          {urgentAlerts.length > 0 && (
+            <div className="bg-amber-500/15 border-2 border-amber-500/60 rounded-2xl p-4 sm:p-5 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4 animate-fadeIn">
+              <div className="flex items-center space-x-3.5">
+                <div className="p-3 bg-amber-500 text-slate-950 rounded-xl font-bold animate-bounce shadow-lg shrink-0">
+                  <Train className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <span className="text-[10px] uppercase font-black tracking-widest text-amber-400 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 font-mono">
+                      ⚠️ MODO TELA CHEIA 15 MINUTOS ATIVO
+                    </span>
+                    <span className="text-xs text-amber-300 font-mono font-bold animate-pulse">
+                      Partida em {urgentAlerts[0].remaining.formattedCountdown}
+                    </span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-black text-white mt-1">
+                    Prefixo: {urgentAlerts[0].alert.prefix} — Horário: {urgentAlerts[0].alert.time}
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Fotos e vídeos estão ocultos na exibição. O painel exibirá somente o cronômetro até a partida.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSlideshowMode(true)}
+                className="w-full sm:w-auto px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs shadow-xl transition shrink-0 flex items-center justify-center space-x-2"
+              >
+                <Maximize2 className="w-4 h-4" />
+                <span>Abrir Apresentação em Tela Cheia</span>
+              </button>
+            </div>
+          )}
+
           {/* Sedes & Locais Manager Section */}
           <section className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 sm:p-6 shadow-xl relative overflow-hidden" id="sedes-manager-section">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
@@ -1526,7 +1662,110 @@ export default function App() {
             }
           }}
         >
-          {mediaFiles.length > 0 ? (
+          {urgentAlerts.length > 0 ? (
+            /* URGENT 15-MINUTE TRAIN DEPARTURE TAKEOVER SCREEN - NO IMAGES/VIDEOS EXHIBITED */
+            <div className="absolute inset-0 z-50 bg-slate-950 flex flex-col justify-between p-6 sm:p-12 text-white border-8 border-amber-500/80 shadow-[inset_0_0_80px_rgba(245,158,11,0.25)] select-none animate-fadeIn">
+              {/* Test mode indicator exit button */}
+              {isTestingAlert && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsTestingAlert(false);
+                  }}
+                  className="absolute top-6 right-6 z-[60] bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-xl shadow-2xl font-bold text-xs flex items-center space-x-2 border border-rose-400/30"
+                >
+                  <X className="w-4 h-4" />
+                  <span>Sair da Simulação de Alerta</span>
+                </button>
+              )}
+
+              {/* Header Banner */}
+              <div className="w-full bg-amber-500/10 border-2 border-amber-500/40 rounded-3xl p-4 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 backdrop-blur-md shadow-2xl">
+                <div className="flex items-center space-x-4">
+                  <div className="p-3 sm:p-4 bg-amber-500 text-slate-950 rounded-2xl animate-bounce shadow-lg">
+                    <Train className="w-8 h-8 sm:w-10 sm:h-10 font-bold" />
+                  </div>
+                  <div>
+                    <span className="text-xs sm:text-sm uppercase font-extrabold tracking-widest text-amber-400 block font-mono">
+                      ⚠️ ALERTA DE PARTIDA DE TREM (ATÉ 15 MINUTOS)
+                    </span>
+                    <h2 className="text-xl sm:text-3xl font-black text-white tracking-wide">
+                      {resolvedFolderName || activeSede?.name || 'SEDE OPERACIONAL'}
+                    </h2>
+                  </div>
+                </div>
+                <div className="bg-slate-900/90 border border-amber-500/30 px-5 py-2.5 rounded-2xl flex items-center space-x-3 shrink-0">
+                  <Bell className="w-5 h-5 text-amber-400 animate-spin" style={{ animationDuration: '4s' }} />
+                  <span className="text-xs font-bold text-amber-200 uppercase font-mono">
+                    FORMAÇÃO DE TRENS EM ANDAMENTO
+                  </span>
+                </div>
+              </div>
+
+              {/* CENTER: MASSIVE COUNTDOWN TIMER & TRAIN ALERT DETAILS */}
+              <div className="my-auto flex flex-col items-center justify-center text-center space-y-6 sm:space-y-8">
+                {/* Prefixo do Trem Badge */}
+                <div className="inline-flex items-center space-x-3 sm:space-x-4 bg-amber-500/15 border-2 border-amber-500/50 px-6 sm:px-12 py-3 sm:py-5 rounded-3xl shadow-2xl">
+                  <span className="text-sm sm:text-lg uppercase font-black tracking-wider text-amber-300 font-mono">
+                    PREFIXO / COMPOSIÇÃO:
+                  </span>
+                  <span className="text-3xl sm:text-6xl font-black font-mono text-white tracking-wider">
+                    {urgentAlerts[0].alert.prefix}
+                  </span>
+                </div>
+
+                {/* CRONÔMETRO GRANDE */}
+                <div className="flex flex-col items-center justify-center">
+                  <div className="text-[5.5rem] sm:text-[9rem] md:text-[12rem] lg:text-[14rem] font-mono font-black tracking-tighter leading-none text-amber-400 drop-shadow-[0_10px_35px_rgba(245,158,11,0.4)] animate-pulse">
+                    {urgentAlerts[0].remaining.formattedCountdown}
+                  </div>
+                  <span className="text-sm sm:text-2xl font-black uppercase tracking-widest text-amber-300/90 mt-2 font-mono">
+                    {urgentAlerts[0].remaining.totalSeconds < 0 ? 'PARTIDA EM SAÍDA / ATRASO' : 'TEMPO RESTANTE PARA A PARTIDA'}
+                  </span>
+                </div>
+
+                {/* Details Bar */}
+                <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-8">
+                  <div className="bg-slate-900/90 border border-slate-800 px-6 sm:px-8 py-3 sm:py-4 rounded-2xl flex items-center space-x-3 shadow-xl">
+                    <Clock className="w-6 h-6 text-amber-400" />
+                    <div className="text-left">
+                      <span className="text-[10px] sm:text-xs text-slate-400 uppercase font-bold block">Horário Previsto</span>
+                      <span className="text-xl sm:text-2xl font-black font-mono text-white">{urgentAlerts[0].alert.time}</span>
+                    </div>
+                  </div>
+
+                  {urgentAlerts[0].alert.status && (
+                    <div className="bg-cyan-500/10 border border-cyan-500/30 px-6 sm:px-8 py-3 sm:py-4 rounded-2xl flex items-center space-x-3 shadow-xl">
+                      <Radio className="w-6 h-6 text-cyan-400 animate-pulse" />
+                      <div className="text-left">
+                        <span className="text-[10px] sm:text-xs text-cyan-300 uppercase font-bold block">Status</span>
+                        <span className="text-xl sm:text-2xl font-bold text-cyan-200">{urgentAlerts[0].alert.status}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Additional Urgent Trains in window */}
+                {urgentAlerts.length > 1 && (
+                  <div className="flex flex-wrap items-center justify-center gap-3 bg-slate-900/80 border border-slate-800 px-6 py-3 rounded-2xl mt-2">
+                    <span className="text-xs text-slate-400 font-bold uppercase">Outras partidas em até 15 min:</span>
+                    {urgentAlerts.slice(1).map((item) => (
+                      <span key={item.alert.id} className="text-xs font-mono font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-xl">
+                        {item.alert.prefix} às {item.alert.time} ({item.remaining.formattedCountdown})
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Bottom Bar */}
+              <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-400 font-mono border-t border-slate-800/80 pt-4">
+                <span>MONITORAÇÃO DE PARTIDAS DE TREM (MODO ALERTA 15 MINUTOS)</span>
+                <span className="text-slate-200 font-bold">HORA ATUAL: {currentTime}</span>
+              </div>
+            </div>
+          ) : mediaFiles.length > 0 ? (
             <div className="absolute inset-0 flex items-center justify-center bg-black">
               {/* Autoplay blocked sound fallback indicator */}
               {videoMuted && mediaFiles[renderedIndex]?.isVideo && (
@@ -1734,7 +1973,7 @@ export default function App() {
               </div>
               {/* Top Controls Quick Overlay */}
               <div 
-                className={`absolute top-4 right-4 z-30 flex items-center space-x-2 bg-black/60 backdrop-blur-md p-1.5 rounded-xl border border-white/5 transition-opacity duration-500 ${
+                className={`absolute top-4 right-4 z-[60] flex items-center space-x-2 bg-black/60 backdrop-blur-md p-1.5 rounded-xl border border-white/5 transition-opacity duration-500 ${
                   showUiInSlideshow ? 'opacity-100' : 'opacity-0 hover:opacity-100'
                 }`}
                 id="slideshow-hud-top"
@@ -2110,6 +2349,29 @@ export default function App() {
               </div>
             </div>
 
+            {/* 15-Minute Rule Explanation & Simulation Bar */}
+            <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl mb-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+              <div className="flex items-start space-x-2.5 text-amber-200">
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 animate-pulse" />
+                <span>
+                  <strong className="text-amber-300 block font-semibold mb-0.5">⚠️ Regra dos 15 Minutos (Modo Alerta Automático):</strong>
+                  Quando faltar exatamente 15 minutos (ou menos) para o horário do trem, a apresentação de fotos/vídeos é pausada e o cronômetro grande assume a tela cheia sem imagens.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsTestingAlert(true);
+                  setSlideshowMode(true);
+                  setIsAlertsModalOpen(false);
+                }}
+                className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl shrink-0 text-xs shadow-lg flex items-center space-x-1.5 transition transform hover:scale-105"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Simular Alerta 15 Min</span>
+              </button>
+            </div>
+
             {/* Add New Alert Form */}
             <form onSubmit={handleAddAlertToSede} className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 mb-5 space-y-3">
               <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
@@ -2143,6 +2405,30 @@ export default function App() {
                     onChange={(e) => setAlertTimeInput(e.target.value)}
                     className="w-full text-xs bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50"
                   />
+                  {/* Quick Time Offsets */}
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    <span className="text-[10px] text-slate-500 self-center font-bold mr-1">Atalhos:</span>
+                    {[
+                      { label: '+10m (Ativa 15min)', mins: 10 },
+                      { label: '+14m (Ativa 15min)', mins: 14 },
+                      { label: '+30m', mins: 30 },
+                      { label: '+1h', mins: 60 },
+                    ].map(btn => (
+                      <button
+                        key={btn.mins}
+                        type="button"
+                        onClick={() => {
+                          const d = new Date(Date.now() + btn.mins * 60 * 1000);
+                          const hh = String(d.getHours()).padStart(2, '0');
+                          const mm = String(d.getMinutes()).padStart(2, '0');
+                          setAlertTimeInput(`${hh}:${mm}`);
+                        }}
+                        className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 font-bold border border-amber-500/30 hover:bg-amber-500/30 transition"
+                      >
+                        {btn.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -2202,56 +2488,70 @@ export default function App() {
                 </div>
               ) : (
                 <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
-                  {selectedSedeForAlerts.trainAlerts.map((alert) => (
-                    <div
-                      key={alert.id}
-                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
-                        alert.active !== false 
-                          ? 'bg-slate-950 border-slate-800' 
-                          : 'bg-slate-950/40 border-slate-900 opacity-60'
-                      }`}
-                    >
-                      <div className="flex items-center space-x-3">
-                        <span className="text-xs font-black font-mono text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg">
-                          {alert.prefix}
-                        </span>
-                        <div>
-                          <div className="flex items-center space-x-2">
-                            <span className="text-xs font-bold font-mono text-slate-200">
-                              🕒 {alert.time}
-                            </span>
-                            {alert.status && (
-                              <span className="text-[10px] font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded-full">
-                                {alert.status}
+                  {selectedSedeForAlerts.trainAlerts.map((alert) => {
+                    const rem = getAlertTimeRemaining(alert.time);
+                    return (
+                      <div
+                        key={alert.id}
+                        className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
+                          alert.active !== false 
+                            ? 'bg-slate-950 border-slate-800' 
+                            : 'bg-slate-950/40 border-slate-900 opacity-60'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3">
+                          <span className="text-xs font-black font-mono text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg">
+                            {alert.prefix}
+                          </span>
+                          <div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-xs font-bold font-mono text-slate-200">
+                                🕒 {alert.time}
                               </span>
-                            )}
+                              {alert.status && (
+                                <span className="text-[10px] font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded-full">
+                                  {alert.status}
+                                </span>
+                              )}
+                              {rem && alert.active !== false && (
+                                rem.isUrgent ? (
+                                  <span className="text-[10px] font-extrabold font-mono text-amber-300 bg-amber-500/20 border border-amber-500/40 px-2 py-0.5 rounded-full animate-pulse">
+                                    ⚠️ Em Tela Cheia ({rem.formattedCountdown})
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-mono text-slate-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded-md">
+                                    Faltam {rem.mins}m {rem.secs}s
+                                  </span>
+                                )
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="flex items-center space-x-2">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleAlertStatus(alert.id)}
-                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition ${
-                            alert.active !== false 
-                              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
-                              : 'bg-slate-800 border-slate-700 text-slate-400'
-                          }`}
-                        >
-                          {alert.active !== false ? 'Ativo' : 'Pausado'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteAlert(alert.id)}
-                          className="p-1.5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg transition"
-                          title="Excluir Alerta"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleAlertStatus(alert.id)}
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition ${
+                              alert.active !== false 
+                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                                : 'bg-slate-800 border-slate-700 text-slate-400'
+                            }`}
+                          >
+                            {alert.active !== false ? 'Ativo' : 'Pausado'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAlert(alert.id)}
+                            className="p-1.5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg transition"
+                            title="Excluir Alerta"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
