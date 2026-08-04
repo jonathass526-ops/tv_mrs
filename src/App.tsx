@@ -206,8 +206,9 @@ export default function App() {
     }
 
     const totalSeconds = Math.floor(diffMs / 1000);
-    // STRICT 15-MINUTE RULE: Urgent ONLY when <= 15 minutes remaining (900s) and up to 3 minutes past departure (-180s)
-    const isUrgent = totalSeconds >= -180 && totalSeconds <= 15 * 60;
+    // 15-MINUTE RULE: Urgent ONLY when remaining time is between 0 and 15 minutes (0 <= totalSeconds <= 900)
+    // Once departure time passes (totalSeconds < 0), isUrgent becomes false so it automatically returns to media slideshow & messages!
+    const isUrgent = totalSeconds >= 0 && totalSeconds <= 15 * 60;
 
     const absSecs = Math.abs(totalSeconds);
     const mins = Math.floor(absSecs / 60);
@@ -288,17 +289,31 @@ export default function App() {
       .sort((a, b) => a.remaining.totalSeconds - b.remaining.totalSeconds);
   }, [allActiveTrainAlerts, currentTime, getAlertTimeRemaining, isTestingAlert]);
 
-  // KPC Banner only when in 15-minute window
+  // KPC Notice Banner overlay during pre-departure notice windows
   const kpcData = useMemo(() => {
-    const kpcUrgent = urgentAlerts.find(u => u.alert.id.startsWith('kpc-'));
-    if (kpcUrgent) {
-      return {
-        message: `Atenção: ${kpcUrgent.alert.prefix} em ${kpcUrgent.remaining.mins} min!`,
-        timer: kpcUrgent.remaining.formattedCountdown
-      };
+    const now = new Date();
+    const currentHour = now.getHours();
+    const currentMinute = now.getMinutes();
+    const currentTotalMinutes = currentHour * 60 + currentMinute;
+    const getRemainingTime = (targetHour: number, targetMinute: number) => {
+      const targetDate = new Date(now);
+      targetDate.setHours(targetHour, targetMinute, 0, 0);
+      const diffSeconds = Math.floor((targetDate.getTime() - now.getTime()) / 1000);
+      if (diffSeconds <= 0) return '00:00:00';
+      const h = Math.floor(diffSeconds / 3600);
+      const m = Math.floor((diffSeconds % 3600) / 60);
+      const s = diffSeconds % 60;
+      return `${h > 0 ? h.toString().padStart(2, '0') + ':' : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    };
+    if (currentTotalMinutes >= 10 * 60 + 30 && currentTotalMinutes < 12 * 60) {
+      return { message: "Atenção para a formação do KPC das 12h", timer: getRemainingTime(12, 0) };
+    } else if (currentTotalMinutes >= 15 * 60 && currentTotalMinutes < 17 * 60) {
+      return { message: "Atenção para a formação do KPC das 17h", timer: getRemainingTime(17, 0) };
+    } else if (currentTotalMinutes >= 17 * 60 + 30 && currentTotalMinutes < 19 * 60 + 50) {
+      return { message: "Atenção para a formação do KPC das 19:50h", timer: getRemainingTime(19, 50) };
     }
     return null;
-  }, [urgentAlerts]);
+  }, [currentTime]);
 
   // Fetch Sedes
   const fetchSedes = useCallback(async () => {
