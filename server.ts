@@ -1,5 +1,5 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
+// import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { Readable } from 'stream';
@@ -523,6 +523,7 @@ async function startServer() {
   } else {
     // In development, hook up Vite middleware
     console.log('Starting server in development mode with Vite middleware...');
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
