@@ -109,7 +109,7 @@ function updateConfigState(newState: any) {
 // Fetch access token, refreshing if necessary
 async function startServer() {
   const app = express();
-  const port = Number(process.env.PORT) || 3000;
+  const PORT = 3000;
 
   app.use(express.json());
 
@@ -509,8 +509,8 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`OneDrive Slideshow Server running on port ${port} (Ready for requests)`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Slideshow Server running on port ${PORT} (Ready for requests)`);
   });
 }
 
