@@ -5,6 +5,7 @@ import fs from 'fs';
 import { Readable } from 'stream';
 import dotenv from 'dotenv';
 import https from 'https';
+import http from 'http';
 
 // Load environment variables from .env
 dotenv.config();
@@ -371,20 +372,7 @@ async function startServer() {
     });
   });
 
-  // Cache resolved Google Drive download location URLs in memory for 45 minutes to give instant 302 responses
-  const driveUrlCache = new Map<string, { redirectUrl: string; expiresAt: number }>();
-
-  // Clean stale cache items every 10 minutes
-  setInterval(() => {
-    const now = Date.now();
-    for (const [key, value] of driveUrlCache.entries()) {
-      if (value.expiresAt <= now) {
-        driveUrlCache.delete(key);
-      }
-    }
-  }, 10 * 60 * 1000);
-
-  // 5. Direct redirect endpoint to download/stream Google Drive media with ZERO server memory/CPU load
+  // 5. Proxy endpoint to download/stream Google Drive media with instant disconnect cleanup
   app.get('/api/drive/media/:id', (req, res) => {
     const fileId = req.params.id;
     const googleApiKey = process.env.GOOGLE_API_KEY;
@@ -392,65 +380,113 @@ async function startServer() {
       return res.status(500).json({ error: 'Google API key missing.' });
     }
 
-    // 1. Check in-memory cache for instant response (< 1ms)
-    const cached = driveUrlCache.get(fileId);
-    if (cached && cached.expiresAt > Date.now()) {
-      res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
-      return res.redirect(302, cached.redirectUrl);
-    }
-
-    // 2. Fetch the Google Drive API redirect location
     const initialUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
-    
-    const requestHeaders: Record<string, string> = {};
-    if (req.headers.range) {
-      requestHeaders['Range'] = req.headers.range;
-    }
-    const referer = getRefererHeader(req);
-    if (referer) {
-      requestHeaders['Referer'] = referer;
-    }
 
-    const clientReq = https.get(initialUrl, { headers: requestHeaders, agent: keepAliveAgent }, (apiRes) => {
-      // If Google Drive returns a 301/302/303/307/308 redirect (standard for drive files and videos)
-      if (apiRes.statusCode && apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
-        const redirectUrl = apiRes.headers.location;
-        apiRes.resume(); // Free socket memory immediately
+    let currentClientReq: http.ClientRequest | null = null;
+    let currentApiRes: http.IncomingMessage | null = null;
+    let isCleanedUp = false;
 
-        // Cache the CDN redirect URL for 45 minutes
-        driveUrlCache.set(fileId, {
-          redirectUrl,
-          expiresAt: Date.now() + 45 * 60 * 1000,
-        });
+    const cleanup = () => {
+      if (isCleanedUp) return;
+      isCleanedUp = true;
+      if (currentApiRes) {
+        try {
+          currentApiRes.unpipe(res);
+          currentApiRes.destroy();
+        } catch (_) {}
+        currentApiRes = null;
+      }
+      if (currentClientReq) {
+        try {
+          currentClientReq.destroy();
+        } catch (_) {}
+        currentClientReq = null;
+      }
+    };
 
-        // Instruct browser and Smart TV to follow 302 redirect directly to Google CDN
-        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
-        return res.redirect(302, redirectUrl);
+    req.on('close', cleanup);
+    req.on('aborted', cleanup);
+    res.on('close', cleanup);
+    res.on('finish', cleanup);
+    res.on('error', cleanup);
+
+    const makeProxyRequest = (targetUrl: string, redirectDepth = 0) => {
+      if (isCleanedUp || res.writableEnded || res.destroyed) return;
+
+      if (redirectDepth > 5) {
+        cleanup();
+        if (!res.headersSent) res.status(508).send('Too many redirects');
+        return;
       }
 
-      // Fallback: If Google returns 200 OK directly without redirecting
-      const statusCode = apiRes.statusCode || 200;
-      res.status(statusCode);
-      res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+      const headersToSend: Record<string, string> = {};
+      if (req.headers.range) {
+        headersToSend['Range'] = req.headers.range;
+      }
+      const referer = getRefererHeader(req);
+      if (referer) {
+        headersToSend['Referer'] = referer;
+      }
 
-      const safeHeaders = ['content-type', 'content-length', 'accept-ranges', 'content-range', 'last-modified', 'etag'];
-      for (const [key, value] of Object.entries(apiRes.headers)) {
-        if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
-          res.setHeader(key, value);
+      currentClientReq = https.get(targetUrl, { headers: headersToSend, agent: keepAliveAgent }, (apiRes) => {
+        currentApiRes = apiRes;
+
+        if (isCleanedUp || res.writableEnded || res.destroyed) {
+          cleanup();
+          return;
         }
-      }
 
-      apiRes.pipe(res);
-    });
+        // Handle 301, 302, 303, 307, 308 redirects from Google Drive API to CDN
+        if (apiRes.statusCode && apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+          const redirectUrl = apiRes.headers.location;
+          apiRes.resume();
+          apiRes.destroy();
+          currentApiRes = null;
 
-    clientReq.on('error', (err: any) => {
-      if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') {
-        console.error('Error fetching Google Drive media redirect:', err);
-      }
-      if (!res.headersSent) {
-        res.status(500).send('Internal server error fetching media');
-      }
-    });
+          makeProxyRequest(redirectUrl, redirectDepth + 1);
+          return;
+        }
+
+        const statusCode = apiRes.statusCode || 200;
+        res.status(statusCode);
+
+        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+
+        const safeHeaders = [
+          'content-type',
+          'content-length',
+          'accept-ranges',
+          'content-range',
+          'content-disposition',
+          'last-modified',
+          'etag',
+        ];
+
+        for (const [key, value] of Object.entries(apiRes.headers)) {
+          if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
+            res.setHeader(key, value);
+          }
+        }
+
+        apiRes.pipe(res);
+
+        apiRes.on('error', () => {
+          cleanup();
+        });
+      });
+
+      currentClientReq.on('error', (err: any) => {
+        if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') {
+          console.error('Error in Drive media proxy:', err?.message || err);
+        }
+        cleanup();
+        if (!res.headersSent) {
+          res.status(500).send('Error proxying media');
+        }
+      });
+    };
+
+    makeProxyRequest(initialUrl);
   });
 
   // Helper to check file extension
