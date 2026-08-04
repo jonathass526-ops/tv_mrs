@@ -710,14 +710,16 @@ export default function App() {
     };
   }, [isPlaying, slideshowMode, transitionSpeed, currentSlideIndex, handleNextSlide, mediaFilesSignature]);
 
-  // Utility to resolve the fastest media URL (local blob URL if cached, remote downloadUrl if not yet cached)
+  // Utility to resolve the fastest media URL (local blob URL if cached for images, remote direct streaming for videos)
   const getMediaSrc = useCallback((file: MediaFile | undefined) => {
     if (!file) return '';
     if (!file.downloadUrl) return '';
+    // Videos always stream directly via HTTP byte ranges for zero server RAM consumption
+    if (file.isVideo) return file.downloadUrl;
     return activeBlobUrls[file.downloadUrl] || file.downloadUrl;
   }, [activeBlobUrls]);
 
-  // 1. Background Caching Effect: Proactively downloads all media files into Cache Storage
+  // 1. Background Caching Effect: Proactively downloads images into Cache Storage (skips videos to save server bandwidth & TV RAM)
   useEffect(() => {
     if (mediaFiles.length === 0) return;
     
@@ -727,7 +729,10 @@ export default function App() {
     const runBackgroundCaching = async () => {
       if (typeof window === 'undefined' || !('caches' in window)) return;
       
-      setDownloadProgress({ total: mediaFiles.length, loaded: 0 });
+      const imageFiles = mediaFiles.filter(f => f.isImage);
+      if (imageFiles.length === 0) return;
+
+      setDownloadProgress({ total: imageFiles.length, loaded: 0 });
       setDownloadStatus('downloading');
       
       try {
@@ -735,17 +740,17 @@ export default function App() {
         let count = 0;
         
         // Count already cached files
-        for (const file of mediaFiles) {
+        for (const file of imageFiles) {
           if (!file.downloadUrl) continue;
           const cachedResponse = await cache.match(file.downloadUrl);
           if (cachedResponse) {
             count++;
           }
         }
-        if (active) setDownloadProgress({ total: mediaFiles.length, loaded: count });
+        if (active) setDownloadProgress({ total: imageFiles.length, loaded: count });
         
         // Download rest sequentially so we don't clog up TV network threads
-        for (const file of mediaFiles) {
+        for (const file of imageFiles) {
           if (!active) break;
           if (!file.downloadUrl) continue;
           
@@ -756,10 +761,10 @@ export default function App() {
               if (res.ok) {
                 await cache.put(file.downloadUrl, res);
                 count++;
-                if (active) setDownloadProgress({ total: mediaFiles.length, loaded: count });
+                if (active) setDownloadProgress({ total: imageFiles.length, loaded: count });
               }
             } catch (err) {
-              console.error('Failed to pre-cache file in background:', file.name, err);
+              console.error('Failed to pre-cache image in background:', file.name, err);
             }
           }
         }
@@ -778,7 +783,7 @@ export default function App() {
     };
   }, [mediaFilesSignature]);
 
-  // 2. Active Slide Window Blob Manager: Generates blob URLs on-demand for current and adjacent slides
+  // 2. Active Slide Window Blob Manager: Generates blob URLs on-demand for images in adjacent slides
   useEffect(() => {
     if (mediaFiles.length === 0) return;
     
@@ -788,7 +793,7 @@ export default function App() {
     const updateActiveBlobs = async () => {
       if (typeof window === 'undefined' || !('caches' in window)) return;
       
-      // We want to keep active blob URLs in RAM for current, next, and previous slides only
+      // We want to keep active blob URLs in RAM for current, next, and previous image slides only
       const indicesToLoad = new Set<number>();
       indicesToLoad.add(renderedIndex);
       indicesToLoad.add(currentSlideIndex);
@@ -798,7 +803,7 @@ export default function App() {
       const neededUrls = new Set<string>();
       indicesToLoad.forEach(idx => {
         const file = mediaFiles[idx];
-        if (file && file.downloadUrl) {
+        if (file && file.downloadUrl && file.isImage) {
           neededUrls.add(file.downloadUrl);
         }
       });
@@ -808,7 +813,7 @@ export default function App() {
       const newBlobUrls: Record<string, string> = {};
       let hasChanges = false;
       
-      // Revoke and clean up blob URLs that are no longer in our active sliding window (avoids RAM issues on Smart TVs)
+      // Revoke and clean up blob URLs that are no longer in our active sliding window
       for (const url of Object.keys(currentBlobs)) {
         if (!neededUrls.has(url)) {
           URL.revokeObjectURL(currentBlobs[url]);
@@ -818,13 +823,12 @@ export default function App() {
         }
       }
       
-      // Fetch or create Blob URLs for all active window items
+      // Fetch or create Blob URLs for image items in active window
       for (const url of neededUrls) {
         if (!newBlobUrls[url]) {
           try {
             let res = await cache.match(url);
             if (!res) {
-              // Fallback fetch if background caching hasn't reached it yet
               res = await fetch(url);
               if (res.ok) {
                 await cache.put(url, res.clone());
@@ -1484,6 +1488,7 @@ export default function App() {
                           <video
                             key={getMediaSrc(mediaFiles[renderedIndex])}
                             src={getMediaSrc(mediaFiles[renderedIndex])}
+                            preload="metadata"
                             className={`bg-black ${
                               videoFitMode === 'cover' 
                                 ? 'w-full h-full object-cover' 
@@ -1817,6 +1822,7 @@ export default function App() {
                   <video
                     key={getMediaSrc(mediaFiles[renderedIndex])}
                     src={getMediaSrc(mediaFiles[renderedIndex])}
+                    preload="metadata"
                     className={`shadow-2xl bg-black ${
                       videoFitMode === 'cover' 
                         ? 'w-full h-full object-cover' 
@@ -1863,12 +1869,10 @@ export default function App() {
                   />
                 )}
               </div>
-              {/* Preload Next Media */}
+              {/* Preload Next Media (Images only to prevent duplicate video streaming) */}
               <div className="hidden" aria-hidden="true" style={{ display: 'none' }}>
-                {mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.isVideo ? (
-                  <video src={getMediaSrc(mediaFiles[(currentSlideIndex + 1) % mediaFiles.length])} preload="auto" muted playsInline />
-                ) : (
-                  <img src={getMediaSrc(mediaFiles[(currentSlideIndex + 1) % mediaFiles.length])} />
+                {!mediaFiles[(currentSlideIndex + 1) % mediaFiles.length]?.isVideo && (
+                  <img src={getMediaSrc(mediaFiles[(currentSlideIndex + 1) % mediaFiles.length])} alt="" />
                 )}
               </div>
               {/* Train Formation Alerts Ticker Overlay in Slideshow */}

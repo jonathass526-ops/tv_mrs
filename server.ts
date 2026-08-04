@@ -373,10 +373,31 @@ async function startServer() {
 
   // 5. Proxy endpoint to download/stream Google Drive media bypassing 403
   app.get('/api/drive/media/:id', (req, res) => {
+    let clientReq: any = null;
+    let apiResRef: any = null;
+    let isCleanedUp = false;
+
+    // Immediately abort upstream connections if client disconnects or closes request
+    const cleanup = () => {
+      if (isCleanedUp) return;
+      isCleanedUp = true;
+      if (clientReq) {
+        try { clientReq.destroy(); } catch (_) {}
+      }
+      if (apiResRef) {
+        try { apiResRef.destroy(); } catch (_) {}
+      }
+    };
+
+    req.on('close', cleanup);
+    req.on('aborted', cleanup);
+    res.on('close', cleanup);
+
     try {
       const fileId = req.params.id;
       const googleApiKey = process.env.GOOGLE_API_KEY;
       if (!googleApiKey) {
+        cleanup();
         return res.status(500).json({ error: 'Google API key missing.' });
       }
       
@@ -391,12 +412,19 @@ async function startServer() {
         headers['Referer'] = referer;
       }
 
-      const clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
+      clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
+        apiResRef = apiRes;
+
+        if (isCleanedUp) {
+          try { apiRes.destroy(); } catch (_) {}
+          return;
+        }
+
         const statusCode = apiRes.statusCode || 200;
         res.status(statusCode);
 
-        // Instruct browser and Smart TVs to cache the files (essential for looping slideshow speed)
-        res.setHeader('Cache-Control', 'public, max-age=1800');
+        // Instruct browser and Smart TVs to cache the files for 24h (essential for looping slideshow speed & zero server load)
+        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
 
         // Forward safe headers
         const safeHeaders = [
@@ -413,18 +441,26 @@ async function startServer() {
           }
         }
 
+        apiRes.on('error', (err) => {
+          cleanup();
+        });
+
         // Pipe directly for native high-performance, low-memory streaming
         apiRes.pipe(res);
       });
 
-      clientReq.on('error', (err) => {
-        console.error('Error proxying media via https.get:', err);
+      clientReq.on('error', (err: any) => {
+        if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') {
+          console.error('Error proxying media via https.get:', err);
+        }
+        cleanup();
         if (!res.headersSent) {
           res.status(500).send('Internal server error proxying file');
         }
       });
     } catch (e) {
       console.error('Error proxying media file:', e);
+      cleanup();
       if (!res.headersSent) {
         res.status(500).send('Internal server error proxying file');
       }
