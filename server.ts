@@ -75,12 +75,12 @@ function writeSedes(data: any[]) {
   }
 }
 
-// Create a persistent HTTPS agent with keepAlive enabled to avoid SSL handshake overhead on range requests
+// Create a persistent HTTPS agent with conservative limits to avoid memory leaks on Cloud Run containers
 const keepAliveAgent = new https.Agent({
   keepAlive: true,
-  maxSockets: 100,
-  maxFreeSockets: 10,
-  timeout: 60000,
+  maxSockets: 30,
+  maxFreeSockets: 5,
+  timeout: 15000,
 });
 
 // Dynamic Referer construction to bypass Google API Key restrictions on any device (TV, mobile, etc.)
@@ -391,6 +391,8 @@ async function startServer() {
     req.on('close', cleanup);
     req.on('aborted', cleanup);
     res.on('close', cleanup);
+    res.on('finish', cleanup);
+    res.on('error', cleanup);
 
     const fileId = req.params.id;
     const googleApiKey = process.env.GOOGLE_API_KEY;
@@ -524,10 +526,33 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Slideshow Server running on port ${PORT} (Ready for requests)`);
   });
+
+  const gracefulShutdown = (signal: string) => {
+    console.log(`Received ${signal}. Closing HTTP server gracefully...`);
+    server.close(() => {
+      console.log('HTTP server closed.');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.error('Forced shutdown after 5s timeout.');
+      process.exit(1);
+    }, 5000);
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
 
 startServer().catch((err) => {
   console.error('Failed to start full-stack server:', err);
