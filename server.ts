@@ -373,19 +373,18 @@ async function startServer() {
 
   // 5. Proxy endpoint to download/stream Google Drive media bypassing 403
   app.get('/api/drive/media/:id', (req, res) => {
-    let clientReq: any = null;
-    let apiResRef: any = null;
+    let activeClientReq: any = null;
+    let activeApiRes: any = null;
     let isCleanedUp = false;
 
-    // Immediately abort upstream connections if client disconnects or closes request
     const cleanup = () => {
       if (isCleanedUp) return;
       isCleanedUp = true;
-      if (clientReq) {
-        try { clientReq.destroy(); } catch (_) {}
+      if (activeClientReq) {
+        try { activeClientReq.destroy(); } catch (_) {}
       }
-      if (apiResRef) {
-        try { apiResRef.destroy(); } catch (_) {}
+      if (activeApiRes) {
+        try { activeApiRes.destroy(); } catch (_) {}
       }
     };
 
@@ -393,37 +392,58 @@ async function startServer() {
     req.on('aborted', cleanup);
     res.on('close', cleanup);
 
-    try {
-      const fileId = req.params.id;
-      const googleApiKey = process.env.GOOGLE_API_KEY;
-      if (!googleApiKey) {
+    const fileId = req.params.id;
+    const googleApiKey = process.env.GOOGLE_API_KEY;
+    if (!googleApiKey) {
+      cleanup();
+      return res.status(500).json({ error: 'Google API key missing.' });
+    }
+
+    const initialUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
+    
+    const requestHeaders: Record<string, string> = {};
+    if (req.headers.range) {
+      requestHeaders['Range'] = req.headers.range;
+    }
+    const referer = getRefererHeader(req);
+    if (referer) {
+      requestHeaders['Referer'] = referer;
+    }
+
+    const makeRequest = (targetUrl: string, headersToSend: Record<string, string>, redirectDepth = 0) => {
+      if (isCleanedUp) return;
+      if (redirectDepth > 6) {
         cleanup();
-        return res.status(500).json({ error: 'Google API key missing.' });
-      }
-      
-      const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
-      
-      const headers: Record<string, string> = {};
-      if (req.headers.range) {
-        headers['Range'] = req.headers.range;
-      }
-      const referer = getRefererHeader(req);
-      if (referer) {
-        headers['Referer'] = referer;
+        if (!res.headersSent) res.status(508).send('Too many redirects');
+        return;
       }
 
-      clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
-        apiResRef = apiRes;
+      activeClientReq = https.get(targetUrl, { headers: headersToSend, agent: keepAliveAgent }, (apiRes) => {
+        activeApiRes = apiRes;
 
         if (isCleanedUp) {
           try { apiRes.destroy(); } catch (_) {}
           return;
         }
 
+        // Handle 301 / 302 / 303 / 307 / 308 Redirects (Google Drive API redirects to Google Cloud Storage CDN)
+        if (apiRes.statusCode && apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+          const redirectUrl = apiRes.headers.location;
+          apiRes.resume(); // Consume stream to avoid leaking memory sockets
+          
+          const redirectHeaders: Record<string, string> = {};
+          if (req.headers.range) {
+            redirectHeaders['Range'] = req.headers.range;
+          }
+          
+          makeRequest(redirectUrl, redirectHeaders, redirectDepth + 1);
+          return;
+        }
+
         const statusCode = apiRes.statusCode || 200;
         res.status(statusCode);
 
-        // Instruct browser and Smart TVs to cache the files for 24h (essential for looping slideshow speed & zero server load)
+        // Instruct browser and Smart TVs to cache files (immutable 24h)
         res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
 
         // Forward safe headers
@@ -441,15 +461,14 @@ async function startServer() {
           }
         }
 
-        apiRes.on('error', (err) => {
+        apiRes.on('error', () => {
           cleanup();
         });
 
-        // Pipe directly for native high-performance, low-memory streaming
         apiRes.pipe(res);
       });
 
-      clientReq.on('error', (err: any) => {
+      activeClientReq.on('error', (err: any) => {
         if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') {
           console.error('Error proxying media via https.get:', err);
         }
@@ -458,13 +477,9 @@ async function startServer() {
           res.status(500).send('Internal server error proxying file');
         }
       });
-    } catch (e) {
-      console.error('Error proxying media file:', e);
-      cleanup();
-      if (!res.headersSent) {
-        res.status(500).send('Internal server error proxying file');
-      }
-    }
+    };
+
+    makeRequest(initialUrl, requestHeaders);
   });
 
   // Helper to check file extension
