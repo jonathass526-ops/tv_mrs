@@ -5,6 +5,7 @@ import fs from 'fs';
 import { Readable } from 'stream';
 import dotenv from 'dotenv';
 import https from 'https';
+import http from 'http';
 
 // Load environment variables from .env
 dotenv.config();
@@ -396,10 +397,14 @@ async function startServer() {
           return res.status(500).send('Too many redirects');
         }
 
-        const clientReq = https.get(targetUrl, { headers, agent: keepAliveAgent }, (apiRes) => {
+        const requestMod = targetUrl.startsWith('https:') ? https : http;
+        const agent = targetUrl.startsWith('https:') ? keepAliveAgent : undefined;
+        
+        const clientReq = requestMod.get(targetUrl, { headers, agent }, (apiRes) => {
           const statusCode = apiRes.statusCode || 200;
 
           if (statusCode >= 300 && statusCode < 400 && apiRes.headers.location) {
+            apiRes.resume(); // Free up the response stream
             let redirectUrl = apiRes.headers.location;
             if (!redirectUrl.startsWith('http')) {
               redirectUrl = new URL(redirectUrl, targetUrl).toString();
@@ -423,7 +428,7 @@ async function startServer() {
           ];
           for (const [key, value] of Object.entries(apiRes.headers)) {
             if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
-              res.setHeader(key, value);
+              res.setHeader(key, Array.isArray(value) ? value : String(value));
             }
           }
 
@@ -431,10 +436,10 @@ async function startServer() {
           apiRes.pipe(res);
         });
 
-        clientReq.on('error', (err) => {
-          console.error('Error proxying media via https.get:', err);
+        clientReq.on('error', (err: Error) => {
+          console.error('Error proxying media via get:', err);
           if (!res.headersSent) {
-            res.status(500).send('Internal server error proxying file');
+            res.status(500).send('Internal server error proxying file: ' + err.message);
           }
         });
       }
