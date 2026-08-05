@@ -1,0 +1,6 @@
+{
+  "name": "test",
+  "scripts": {
+    "test-sigterm": "node test-sigterm2.js"
+  }
+}

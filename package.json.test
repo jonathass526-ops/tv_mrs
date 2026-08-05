@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "test-sigterm": "node test-sigterm.js"
+  }
+}
