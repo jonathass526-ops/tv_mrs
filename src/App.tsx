@@ -172,124 +172,7 @@ export default function App() {
   const clockTimer = useRef<NodeJS.Timeout | null>(null);
   // Filter files to images/videos only for the slideshow
   const mediaFiles = useMemo(() => files.filter(f => f.isImage || f.isVideo || f.isPdf), [files]);
-  // State for simulated/preview alert mode in modal or dashboard
-  const [isTestingAlert, setIsTestingAlert] = useState(false);
-
-  // KPC Fixed Train Formation Schedule (12:00, 17:00, 19:50)
-  const kpcAlerts = useMemo<TrainAlert[]>(() => [
-    { id: 'kpc-1200', prefix: 'FORMAÇÃO KPC 12H', time: '12:00', status: 'Partida Programada', active: true },
-    { id: 'kpc-1700', prefix: 'FORMAÇÃO KPC 17H', time: '17:00', status: 'Partida Programada', active: true },
-    { id: 'kpc-1950', prefix: 'FORMAÇÃO KPC 19:50H', time: '19:50', status: 'Partida Programada', active: true },
-  ], []);
-
-  // Helper to calculate exact remaining time for a train alert
-  const getAlertTimeRemaining = useCallback((timeStr: string) => {
-    if (!timeStr) return null;
-    const parts = timeStr.trim().split(':');
-    if (parts.length < 2) return null;
-    const targetHours = parseInt(parts[0], 10);
-    const targetMinutes = parseInt(parts[1], 10);
-    if (isNaN(targetHours) || isNaN(targetMinutes)) return null;
-
-    const now = new Date();
-    let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), targetHours, targetMinutes, 0, 0);
-
-    let diffMs = target.getTime() - now.getTime();
-
-    // Midnight crossing adjustment
-    if (diffMs < -12 * 60 * 60 * 1000) {
-      target.setDate(target.getDate() + 1);
-      diffMs = target.getTime() - now.getTime();
-    } else if (diffMs > 12 * 60 * 60 * 1000) {
-      target.setDate(target.getDate() - 1);
-      diffMs = target.getTime() - now.getTime();
-    }
-
-    const totalSeconds = Math.floor(diffMs / 1000);
-    // 15-MINUTE RULE: Urgent ONLY when remaining time is between 0 and 15 minutes (0 <= totalSeconds <= 900)
-    // Once departure time passes (totalSeconds < 0), isUrgent becomes false so it automatically returns to media slideshow & messages!
-    const isUrgent = totalSeconds >= 0 && totalSeconds <= 15 * 60;
-
-    const absSecs = Math.abs(totalSeconds);
-    const mins = Math.floor(absSecs / 60);
-    const secs = absSecs % 60;
-    const formattedCountdown = `${totalSeconds < 0 ? '-' : ''}${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-
-    return {
-      totalSeconds,
-      mins,
-      secs,
-      formattedCountdown,
-      isUrgent,
-      targetTimeString: timeStr
-    };
-  }, []);
-
-  // Consolidate all train alerts across loaded alerts, active Sede, all Sedes, and KPC schedule
-  const allActiveTrainAlerts = useMemo(() => {
-    const map = new Map<string, TrainAlert>();
-
-    // 1. KPC Fixed Schedule
-    kpcAlerts.forEach(a => map.set(a.id, a));
-
-    // 2. All Sedes
-    (sedes || []).forEach(s => {
-      (s.trainAlerts || []).forEach(a => {
-        if (a && a.id) map.set(a.id, a);
-      });
-    });
-
-    // 3. Active Sede
-    (activeSede?.trainAlerts || []).forEach(a => {
-      if (a && a.id) map.set(a.id, a);
-    });
-
-    // 4. Current trainAlerts state
-    (trainAlerts || []).forEach(a => {
-      if (a && a.id) map.set(a.id, a);
-    });
-
-    return Array.from(map.values());
-  }, [trainAlerts, activeSede, sedes, kpcAlerts]);
-
-  // Compute active train alerts that are strictly in the urgent 15-minute window
-  const urgentAlerts = useMemo(() => {
-    // If user clicked simulation preview, generate a test alert
-    if (isTestingAlert) {
-      return [{
-        alert: {
-          id: 'test-preview',
-          prefix: 'TREM-TESTE 15MIN',
-          time: '14:30',
-          status: 'TESTE DE TELA CHEIA (15 MINUTOS)',
-          active: true
-        },
-        remaining: {
-          totalSeconds: 840, // 14 mins remaining
-          mins: 14,
-          secs: 0,
-          formattedCountdown: '14:00',
-          isUrgent: true,
-          targetTimeString: '14:30'
-        }
-      }];
-    }
-
-    if (allActiveTrainAlerts.length === 0) return [];
-
-    return allActiveTrainAlerts
-      .filter(a => a.active !== false)
-      .map(alert => {
-        const remaining = getAlertTimeRemaining(alert.time);
-        return { alert, remaining };
-      })
-      .filter((item): item is { alert: TrainAlert; remaining: NonNullable<ReturnType<typeof getAlertTimeRemaining>> } => 
-        item.remaining !== null && item.remaining.isUrgent
-      )
-      .sort((a, b) => a.remaining.totalSeconds - b.remaining.totalSeconds);
-  }, [allActiveTrainAlerts, currentTime, getAlertTimeRemaining, isTestingAlert]);
-
-  // KPC Notice Banner overlay during pre-departure notice windows
+  // KPC Timer Logic
   const kpcData = useMemo(() => {
     const now = new Date();
     const currentHour = now.getHours();
@@ -313,7 +196,64 @@ export default function App() {
       return { message: "Atenção para a formação do KPC das 19:50h", timer: getRemainingTime(19, 50) };
     }
     return null;
-  }, [currentTime]);
+  }, [currentTime]); // recompute every second as currentTime changes
+
+  // Helper to calculate exact remaining time for a train alert
+  const getAlertTimeRemaining = useCallback((timeStr: string) => {
+    if (!timeStr) return null;
+    const parts = timeStr.split(':');
+    if (parts.length < 2) return null;
+    const targetHours = parseInt(parts[0], 10);
+    const targetMinutes = parseInt(parts[1], 10);
+    if (isNaN(targetHours) || isNaN(targetMinutes)) return null;
+
+    const now = new Date();
+    let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), targetHours, targetMinutes, 0, 0);
+
+    let diffMs = target.getTime() - now.getTime();
+
+    // Midnight crossing
+    if (diffMs < -12 * 60 * 60 * 1000) {
+      target.setDate(target.getDate() + 1);
+      diffMs = target.getTime() - now.getTime();
+    } else if (diffMs > 12 * 60 * 60 * 1000) {
+      target.setDate(target.getDate() - 1);
+      diffMs = target.getTime() - now.getTime();
+    }
+
+    const totalSeconds = Math.floor(diffMs / 1000);
+    // Urgent if <= 15 minutes remaining (900 seconds) and up to 3 minutes past departure (-180 seconds)
+    const isUrgent = totalSeconds >= -180 && totalSeconds <= 15 * 60;
+
+    const absSecs = Math.abs(totalSeconds);
+    const mins = Math.floor(absSecs / 60);
+    const secs = absSecs % 60;
+    const formattedCountdown = `${totalSeconds < 0 ? '-' : ''}${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+    return {
+      totalSeconds,
+      mins,
+      secs,
+      formattedCountdown,
+      isUrgent,
+      targetTimeString: timeStr
+    };
+  }, []);
+
+  // Compute active train alerts that are in the urgent 15-minute window
+  const urgentAlerts = useMemo(() => {
+    if (!trainAlerts || trainAlerts.length === 0) return [];
+    return trainAlerts
+      .filter(a => a.active !== false)
+      .map(alert => {
+        const remaining = getAlertTimeRemaining(alert.time);
+        return { alert, remaining };
+      })
+      .filter((item): item is { alert: TrainAlert; remaining: NonNullable<ReturnType<typeof getAlertTimeRemaining>> } => 
+        item.remaining !== null && item.remaining.isUrgent
+      )
+      .sort((a, b) => a.remaining.totalSeconds - b.remaining.totalSeconds);
+  }, [trainAlerts, currentTime, getAlertTimeRemaining]);
 
   // Fetch Sedes
   const fetchSedes = useCallback(async () => {
@@ -1001,40 +941,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Urgent Train Departure Banner on Dashboard */}
-          {urgentAlerts.length > 0 && (
-            <div className="bg-amber-500/15 border-2 border-amber-500/60 rounded-2xl p-4 sm:p-5 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4 animate-fadeIn">
-              <div className="flex items-center space-x-3.5">
-                <div className="p-3 bg-amber-500 text-slate-950 rounded-xl font-bold animate-bounce shadow-lg shrink-0">
-                  <Train className="w-6 h-6" />
-                </div>
-                <div>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-[10px] uppercase font-black tracking-widest text-amber-400 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 font-mono">
-                      ⚠️ MODO TELA CHEIA 15 MINUTOS ATIVO
-                    </span>
-                    <span className="text-xs text-amber-300 font-mono font-bold animate-pulse">
-                      Partida em {urgentAlerts[0].remaining.formattedCountdown}
-                    </span>
-                  </div>
-                  <h3 className="text-base sm:text-lg font-black text-white mt-1">
-                    Prefixo: {urgentAlerts[0].alert.prefix} — Horário: {urgentAlerts[0].alert.time}
-                  </h3>
-                  <p className="text-xs text-slate-300 mt-0.5">
-                    Fotos e vídeos estão ocultos na exibição. O painel exibirá somente o cronômetro até a partida.
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setSlideshowMode(true)}
-                className="w-full sm:w-auto px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs shadow-xl transition shrink-0 flex items-center justify-center space-x-2"
-              >
-                <Maximize2 className="w-4 h-4" />
-                <span>Abrir Apresentação em Tela Cheia</span>
-              </button>
-            </div>
-          )}
-
           {/* Sedes & Locais Manager Section */}
           <section className="bg-slate-900/90 rounded-2xl border border-slate-800 p-5 sm:p-6 shadow-xl relative overflow-hidden" id="sedes-manager-section">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
@@ -1680,21 +1586,6 @@ export default function App() {
           {urgentAlerts.length > 0 ? (
             /* URGENT 15-MINUTE TRAIN DEPARTURE TAKEOVER SCREEN - NO IMAGES/VIDEOS EXHIBITED */
             <div className="absolute inset-0 z-50 bg-slate-950 flex flex-col justify-between p-6 sm:p-12 text-white border-8 border-amber-500/80 shadow-[inset_0_0_80px_rgba(245,158,11,0.25)] select-none animate-fadeIn">
-              {/* Test mode indicator exit button */}
-              {isTestingAlert && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsTestingAlert(false);
-                  }}
-                  className="absolute top-6 right-6 z-[60] bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-xl shadow-2xl font-bold text-xs flex items-center space-x-2 border border-rose-400/30"
-                >
-                  <X className="w-4 h-4" />
-                  <span>Sair da Simulação de Alerta</span>
-                </button>
-              )}
-
               {/* Header Banner */}
               <div className="w-full bg-amber-500/10 border-2 border-amber-500/40 rounded-3xl p-4 sm:p-6 flex flex-col sm:flex-row items-center justify-between gap-4 backdrop-blur-md shadow-2xl">
                 <div className="flex items-center space-x-4">
@@ -2364,29 +2255,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* 15-Minute Rule Explanation & Simulation Bar */}
-            <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl mb-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-              <div className="flex items-start space-x-2.5 text-amber-200">
-                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5 animate-pulse" />
-                <span>
-                  <strong className="text-amber-300 block font-semibold mb-0.5">⚠️ Regra dos 15 Minutos (Modo Alerta Automático):</strong>
-                  Quando faltar exatamente 15 minutos (ou menos) para o horário do trem, a apresentação de fotos/vídeos é pausada e o cronômetro grande assume a tela cheia sem imagens.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsTestingAlert(true);
-                  setSlideshowMode(true);
-                  setIsAlertsModalOpen(false);
-                }}
-                className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl shrink-0 text-xs shadow-lg flex items-center space-x-1.5 transition transform hover:scale-105"
-              >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>Simular Alerta 15 Min</span>
-              </button>
-            </div>
-
             {/* Add New Alert Form */}
             <form onSubmit={handleAddAlertToSede} className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 mb-5 space-y-3">
               <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
@@ -2420,30 +2288,6 @@ export default function App() {
                     onChange={(e) => setAlertTimeInput(e.target.value)}
                     className="w-full text-xs bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-200 font-mono placeholder-slate-600 focus:outline-none focus:border-amber-500/50"
                   />
-                  {/* Quick Time Offsets */}
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    <span className="text-[10px] text-slate-500 self-center font-bold mr-1">Atalhos:</span>
-                    {[
-                      { label: '+10m (Ativa 15min)', mins: 10 },
-                      { label: '+14m (Ativa 15min)', mins: 14 },
-                      { label: '+30m', mins: 30 },
-                      { label: '+1h', mins: 60 },
-                    ].map(btn => (
-                      <button
-                        key={btn.mins}
-                        type="button"
-                        onClick={() => {
-                          const d = new Date(Date.now() + btn.mins * 60 * 1000);
-                          const hh = String(d.getHours()).padStart(2, '0');
-                          const mm = String(d.getMinutes()).padStart(2, '0');
-                          setAlertTimeInput(`${hh}:${mm}`);
-                        }}
-                        className="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 font-bold border border-amber-500/30 hover:bg-amber-500/30 transition"
-                      >
-                        {btn.label}
-                      </button>
-                    ))}
-                  </div>
                 </div>
               </div>
 

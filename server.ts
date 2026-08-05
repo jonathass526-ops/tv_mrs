@@ -5,7 +5,6 @@ import fs from 'fs';
 import { Readable } from 'stream';
 import dotenv from 'dotenv';
 import https from 'https';
-import http from 'http';
 
 // Load environment variables from .env
 dotenv.config();
@@ -392,59 +391,38 @@ async function startServer() {
         headers['Referer'] = referer;
       }
 
-      function fetchWithRedirect(targetUrl: string, redirectCount = 0) {
-        if (redirectCount > 5) {
-          return res.status(500).send('Too many redirects');
+      const clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
+        const statusCode = apiRes.statusCode || 200;
+        res.status(statusCode);
+
+        // Instruct browser and Smart TVs to cache the files (essential for looping slideshow speed)
+        res.setHeader('Cache-Control', 'public, max-age=1800');
+
+        // Forward safe headers
+        const safeHeaders = [
+          'content-type',
+          'content-length',
+          'accept-ranges',
+          'content-range',
+          'last-modified',
+          'etag'
+        ];
+        for (const [key, value] of Object.entries(apiRes.headers)) {
+          if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
+            res.setHeader(key, value);
+          }
         }
 
-        const requestMod = targetUrl.startsWith('https:') ? https : http;
-        const agent = targetUrl.startsWith('https:') ? keepAliveAgent : undefined;
-        
-        const clientReq = requestMod.get(targetUrl, { headers, agent }, (apiRes) => {
-          const statusCode = apiRes.statusCode || 200;
+        // Pipe directly for native high-performance, low-memory streaming
+        apiRes.pipe(res);
+      });
 
-          if (statusCode >= 300 && statusCode < 400 && apiRes.headers.location) {
-            apiRes.resume(); // Free up the response stream
-            let redirectUrl = apiRes.headers.location;
-            if (!redirectUrl.startsWith('http')) {
-              redirectUrl = new URL(redirectUrl, targetUrl).toString();
-            }
-            return fetchWithRedirect(redirectUrl, redirectCount + 1);
-          }
-
-          res.status(statusCode);
-
-          // Instruct browser and Smart TVs to cache the files (essential for looping slideshow speed)
-          res.setHeader('Cache-Control', 'public, max-age=1800');
-
-          // Forward safe headers
-          const safeHeaders = [
-            'content-type',
-            'content-length',
-            'accept-ranges',
-            'content-range',
-            'last-modified',
-            'etag'
-          ];
-          for (const [key, value] of Object.entries(apiRes.headers)) {
-            if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
-              res.setHeader(key, Array.isArray(value) ? value : String(value));
-            }
-          }
-
-          // Pipe directly for native high-performance, low-memory streaming
-          apiRes.pipe(res);
-        });
-
-        clientReq.on('error', (err: Error) => {
-          console.error('Error proxying media via get:', err);
-          if (!res.headersSent) {
-            res.status(500).send('Internal server error proxying file: ' + err.message);
-          }
-        });
-      }
-
-      fetchWithRedirect(url);
+      clientReq.on('error', (err) => {
+        console.error('Error proxying media via https.get:', err);
+        if (!res.headersSent) {
+          res.status(500).send('Internal server error proxying file');
+        }
+      });
     } catch (e) {
       console.error('Error proxying media file:', e);
       if (!res.headersSent) {
