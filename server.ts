@@ -1,5 +1,5 @@
 import express from 'express';
-
+import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { Readable } from 'stream';
@@ -109,7 +109,7 @@ function updateConfigState(newState: any) {
 // Fetch access token, refreshing if necessary
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const port = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
@@ -373,31 +373,10 @@ async function startServer() {
 
   // 5. Proxy endpoint to download/stream Google Drive media bypassing 403
   app.get('/api/drive/media/:id', (req, res) => {
-    let clientReq: any = null;
-    let apiResRef: any = null;
-    let isCleanedUp = false;
-
-    // Immediately abort upstream connections if client disconnects or closes request
-    const cleanup = () => {
-      if (isCleanedUp) return;
-      isCleanedUp = true;
-      if (clientReq) {
-        try { clientReq.destroy(); } catch (_) {}
-      }
-      if (apiResRef) {
-        try { apiResRef.destroy(); } catch (_) {}
-      }
-    };
-
-    req.on('close', cleanup);
-    req.on('aborted', cleanup);
-    res.on('close', cleanup);
-
     try {
       const fileId = req.params.id;
       const googleApiKey = process.env.GOOGLE_API_KEY;
       if (!googleApiKey) {
-        cleanup();
         return res.status(500).json({ error: 'Google API key missing.' });
       }
       
@@ -412,19 +391,12 @@ async function startServer() {
         headers['Referer'] = referer;
       }
 
-      clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
-        apiResRef = apiRes;
-
-        if (isCleanedUp) {
-          try { apiRes.destroy(); } catch (_) {}
-          return;
-        }
-
+      const clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
         const statusCode = apiRes.statusCode || 200;
         res.status(statusCode);
 
-        // Instruct browser and Smart TVs to cache the files for 24h (essential for looping slideshow speed & zero server load)
-        res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+        // Instruct browser and Smart TVs to cache the files (essential for looping slideshow speed)
+        res.setHeader('Cache-Control', 'public, max-age=1800');
 
         // Forward safe headers
         const safeHeaders = [
@@ -441,26 +413,18 @@ async function startServer() {
           }
         }
 
-        apiRes.on('error', (err) => {
-          cleanup();
-        });
-
         // Pipe directly for native high-performance, low-memory streaming
         apiRes.pipe(res);
       });
 
-      clientReq.on('error', (err: any) => {
-        if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') {
-          console.error('Error proxying media via https.get:', err);
-        }
-        cleanup();
+      clientReq.on('error', (err) => {
+        console.error('Error proxying media via https.get:', err);
         if (!res.headersSent) {
           res.status(500).send('Internal server error proxying file');
         }
       });
     } catch (e) {
       console.error('Error proxying media file:', e);
-      cleanup();
       if (!res.headersSent) {
         res.status(500).send('Internal server error proxying file');
       }
@@ -475,7 +439,9 @@ async function startServer() {
   }
 
   // --- Serve Frontend and Integrate Vite ---
+
   const isProduction = process.env.NODE_ENV === 'production';
+
   if (isProduction) {
     // In production, serve build assets statically
     // Ensure we find the correct dist directory whether running from project root or inside dist/
@@ -499,17 +465,16 @@ async function startServer() {
   } else {
     // In development, hook up Vite middleware
     console.log('Starting server in development mode with Vite middleware...');
-    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
-        
+    
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Slideshow Server running on port ${PORT} (Ready for requests)`);
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`OneDrive Slideshow Server running on port ${port} (Ready for requests)`);
   });
 }
 
