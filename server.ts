@@ -391,38 +391,55 @@ async function startServer() {
         headers['Referer'] = referer;
       }
 
-      const clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
-        const statusCode = apiRes.statusCode || 200;
-        res.status(statusCode);
+      function fetchWithRedirect(targetUrl: string, redirectCount = 0) {
+        if (redirectCount > 5) {
+          return res.status(500).send('Too many redirects');
+        }
 
-        // Instruct browser and Smart TVs to cache the files (essential for looping slideshow speed)
-        res.setHeader('Cache-Control', 'public, max-age=1800');
+        const clientReq = https.get(targetUrl, { headers, agent: keepAliveAgent }, (apiRes) => {
+          const statusCode = apiRes.statusCode || 200;
 
-        // Forward safe headers
-        const safeHeaders = [
-          'content-type',
-          'content-length',
-          'accept-ranges',
-          'content-range',
-          'last-modified',
-          'etag'
-        ];
-        for (const [key, value] of Object.entries(apiRes.headers)) {
-          if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
-            res.setHeader(key, value);
+          if (statusCode >= 300 && statusCode < 400 && apiRes.headers.location) {
+            let redirectUrl = apiRes.headers.location;
+            if (!redirectUrl.startsWith('http')) {
+              redirectUrl = new URL(redirectUrl, targetUrl).toString();
+            }
+            return fetchWithRedirect(redirectUrl, redirectCount + 1);
           }
-        }
 
-        // Pipe directly for native high-performance, low-memory streaming
-        apiRes.pipe(res);
-      });
+          res.status(statusCode);
 
-      clientReq.on('error', (err) => {
-        console.error('Error proxying media via https.get:', err);
-        if (!res.headersSent) {
-          res.status(500).send('Internal server error proxying file');
-        }
-      });
+          // Instruct browser and Smart TVs to cache the files (essential for looping slideshow speed)
+          res.setHeader('Cache-Control', 'public, max-age=1800');
+
+          // Forward safe headers
+          const safeHeaders = [
+            'content-type',
+            'content-length',
+            'accept-ranges',
+            'content-range',
+            'last-modified',
+            'etag'
+          ];
+          for (const [key, value] of Object.entries(apiRes.headers)) {
+            if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
+              res.setHeader(key, value);
+            }
+          }
+
+          // Pipe directly for native high-performance, low-memory streaming
+          apiRes.pipe(res);
+        });
+
+        clientReq.on('error', (err) => {
+          console.error('Error proxying media via https.get:', err);
+          if (!res.headersSent) {
+            res.status(500).send('Internal server error proxying file');
+          }
+        });
+      }
+
+      fetchWithRedirect(url);
     } catch (e) {
       console.error('Error proxying media file:', e);
       if (!res.headersSent) {
