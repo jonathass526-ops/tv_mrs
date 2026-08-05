@@ -1,5 +1,5 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
+
 import path from 'path';
 import fs from 'fs';
 import { Readable } from 'stream';
@@ -506,6 +506,7 @@ async function startServer() {
   } else {
     // In development, hook up Vite middleware
     console.log('Starting server in development mode with Vite middleware...');
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -514,10 +515,33 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Slideshow Server running on port ${PORT} (Ready for requests)`);
   });
+
+  const gracefulShutdown = (signal) => {
+    console.log(`Received ${signal}. Closing HTTP server gracefully...`);
+    server.close(() => {
+      console.log('HTTP server closed.');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.error('Forced shutdown after 5s timeout.');
+      process.exit(1);
+    }, 5000);
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
 
 startServer().catch((err) => {
   console.error('Failed to start full-stack server:', err);
