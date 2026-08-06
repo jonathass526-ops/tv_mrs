@@ -33,70 +33,6 @@ function writeConfig(data: any) {
   }
 }
 
-const SEDES_FILE = path.resolve('./sedes-config.json');
-
-// Extract Google Drive Folder ID from URL or ID string
-function extractFolderId(urlOrId: string | null | undefined): string | null {
-  if (!urlOrId) return null;
-  const trimmed = urlOrId.trim();
-  const gDriveFolderRegex = /\/folders\/([a-zA-Z0-9-_]+)/;
-  const gDriveIdParamRegex = /id=([a-zA-Z0-9-_]+)/;
-
-  const matchFolder = trimmed.match(gDriveFolderRegex);
-  if (matchFolder && matchFolder[1]) return matchFolder[1];
-
-  const matchId = trimmed.match(gDriveIdParamRegex);
-  if (matchId && matchId[1]) return matchId[1];
-
-  if (/^[a-zA-Z0-9-_]+$/.test(trimmed)) {
-    return trimmed;
-  }
-
-  return null;
-}
-
-function readSedes(): any[] {
-  if (fs.existsSync(SEDES_FILE)) {
-    try {
-      return JSON.parse(fs.readFileSync(SEDES_FILE, 'utf-8'));
-    } catch (e) {
-      console.error('Error reading sedes-config.json:', e);
-      return [];
-    }
-  }
-  return [];
-}
-
-function writeSedes(data: any[]) {
-  try {
-    fs.writeFileSync(SEDES_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('Error writing sedes-config.json:', e);
-  }
-}
-
-// Create a persistent HTTPS agent with keepAlive enabled to avoid SSL handshake overhead on range requests
-const keepAliveAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 100,
-  maxFreeSockets: 10,
-  timeout: 60000,
-});
-
-// Dynamic Referer construction to bypass Google API Key restrictions on any device (TV, mobile, etc.)
-function getRefererHeader(req: express.Request): string {
-  if (req.headers.referer) {
-    return req.headers.referer;
-  }
-  const host = req.headers.host;
-  if (host) {
-    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
-    const protocol = isHttps ? 'https' : 'http';
-    return `${protocol}://${host}/`;
-  }
-  return process.env.APP_URL || '';
-}
-
 // Global tokens & selection cache from file
 let configState = readConfig();
 
@@ -141,7 +77,21 @@ async function startServer() {
     }
 
     url = url.trim();
-    const folderId = extractFolderId(url);
+
+    // Extract Google Drive Folder ID
+    let folderId = null;
+    const gDriveFolderRegex = /\/folders\/([a-zA-Z0-9-_]+)/;
+    const gDriveIdParamRegex = /id=([a-zA-Z0-9-_]+)/;
+
+    const matchFolder = url.match(gDriveFolderRegex);
+    if (matchFolder && matchFolder[1]) {
+      folderId = matchFolder[1];
+    } else {
+      const matchId = url.match(gDriveIdParamRegex);
+      if (matchId && matchId[1]) {
+        folderId = matchId[1];
+      }
+    }
 
     if (!folderId) {
       return res.status(400).json({ error: 'Link inválido. Certifique-se de que é um link válido de uma pasta do Google Drive.' });
@@ -155,94 +105,6 @@ async function startServer() {
     res.json({ success: true, publicSharingUrl: configState.publicSharingUrl });
   });
 
-  // 3b. Sedes Management Endpoints
-  app.get('/api/sedes', (req, res) => {
-    const sedes = readSedes();
-    res.json({ sedes });
-  });
-
-  app.post('/api/sedes', (req, res) => {
-    const { id, name, folderUrl, description } = req.body;
-    if (!name || !name.trim() || !folderUrl || !folderUrl.trim()) {
-      return res.status(400).json({ error: 'Nome da sede e link da pasta são obrigatórios.' });
-    }
-
-    const folderId = extractFolderId(folderUrl);
-    if (!folderId) {
-      return res.status(400).json({ error: 'Link ou ID de pasta do Google Drive inválido. Cole o link público da pasta.' });
-    }
-
-    const sedes = readSedes();
-    let updatedSede: any;
-
-    if (id) {
-      const index = sedes.findIndex((s: any) => s.id === id);
-      if (index !== -1) {
-        sedes[index] = {
-          ...sedes[index],
-          name: name.trim(),
-          folderUrl: folderUrl.trim(),
-          folderId,
-          description: description ? description.trim() : '',
-          trainAlerts: Array.isArray(req.body.trainAlerts) ? req.body.trainAlerts : (sedes[index].trainAlerts || []),
-          updatedAt: new Date().toISOString()
-        };
-        updatedSede = sedes[index];
-      } else {
-        return res.status(404).json({ error: 'Sede não encontrada.' });
-      }
-    } else {
-      const newId = 'sede-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 6);
-      updatedSede = {
-        id: newId,
-        name: name.trim(),
-        folderUrl: folderUrl.trim(),
-        folderId,
-        description: description ? description.trim() : '',
-        trainAlerts: Array.isArray(req.body.trainAlerts) ? req.body.trainAlerts : [],
-        createdAt: new Date().toISOString()
-      };
-      sedes.push(updatedSede);
-    }
-
-    writeSedes(sedes);
-
-    // Default global public link fallback if none set
-    if (!configState.publicSharingUrl) {
-      updateConfigState({ publicSharingUrl: folderId });
-    }
-
-    res.json({ success: true, sede: updatedSede, sedes });
-  });
-
-  app.post('/api/sedes/:id/alerts', (req, res) => {
-    const { id } = req.params;
-    const { trainAlerts } = req.body;
-    if (!Array.isArray(trainAlerts)) {
-      return res.status(400).json({ error: 'Os alertas de trens devem ser uma lista.' });
-    }
-
-    const sedes = readSedes();
-    const index = sedes.findIndex((s: any) => s.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: 'Sede não encontrada.' });
-    }
-
-    sedes[index].trainAlerts = trainAlerts;
-    sedes[index].updatedAt = new Date().toISOString();
-
-    writeSedes(sedes);
-    res.json({ success: true, sede: sedes[index], sedes });
-  });
-
-  app.delete('/api/sedes/:id', (req, res) => {
-    const { id } = req.params;
-    let sedes = readSedes();
-    sedes = sedes.filter((s: any) => s.id !== id);
-    writeSedes(sedes);
-    res.json({ success: true, sedes });
-  });
-
   // 6c. Clear Public Link
   app.delete('/api/drive/public-link', (req, res) => {
     updateConfigState({
@@ -251,47 +113,42 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // 4. Get Files in Selected Folder (Supports Sedes, Direct Folder Link, Public Link)
+  // 4. Get Files in Selected Folder (Supports Real, Public Link, and Demo/Simulation Mode)
   app.get('/api/drive/files', async (req, res) => {
-    let targetFolderUrlOrId = (req.query.sedeId || req.query.folderId || req.query.folderUrl) as string | undefined;
-    let customSedeName = '';
-    let matchedSede: any = null;
-
-    if (req.query.sedeId) {
-      const sedes = readSedes();
-      matchedSede = sedes.find((s: any) => s.id === req.query.sedeId);
-      if (matchedSede) {
-        targetFolderUrlOrId = matchedSede.folderId || matchedSede.folderUrl;
-        customSedeName = matchedSede.name;
-      }
-    }
-
-    if (!targetFolderUrlOrId) {
-      targetFolderUrlOrId = configState.publicSharingUrl;
-    }
-
-    if (targetFolderUrlOrId) {
-      let folderId = extractFolderId(targetFolderUrlOrId) || targetFolderUrlOrId;
+    // If a Public Sharing Link is configured (Google Drive)
+    if (configState.publicSharingUrl) {
       const googleApiKey = process.env.GOOGLE_API_KEY;
-
       if (!googleApiKey) {
          return res.json({
            isDemo: true,
            error: 'A chave de API do Google (GOOGLE_API_KEY) não está configurada no servidor. Por favor, adicione-a nas configurações para ler pastas públicas do Google Drive.',
-           folderName: customSedeName || 'Erro de Configuração',
+           folderName: 'Erro de Configuração',
            files: [],
          });
       }
 
       try {
+        let folderId = configState.publicSharingUrl;
+        
+        // Extract ID if it's a full URL (backwards compatibility)
+        const gDriveFolderRegex = /\/folders\/([a-zA-Z0-9-_]+)/;
+        const gDriveIdParamRegex = /id=([a-zA-Z0-9-_]+)/;
+        const matchFolder = folderId.match(gDriveFolderRegex);
+        if (matchFolder && matchFolder[1]) {
+          folderId = matchFolder[1];
+        } else {
+          const matchId = folderId.match(gDriveIdParamRegex);
+          if (matchId && matchId[1]) {
+            folderId = matchId[1];
+          }
+        }
+        
         console.log(`Buscando arquivos da pasta do Google Drive: ${folderId}`);
         const q = `'${folderId}' in parents and trashed=false`;
         const encodedQ = encodeURIComponent(q);
         const fetchHeaders: any = {};
-        const referer = getRefererHeader(req);
-        if (referer) {
-          fetchHeaders['Referer'] = referer;
-        }
+        if (req.headers.referer) fetchHeaders['Referer'] = req.headers.referer;
+        else if (process.env.APP_URL) fetchHeaders['Referer'] = process.env.APP_URL;
 
         const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodedQ}&fields=files(id,name,mimeType,size,webContentLink,webViewLink,createdTime,videoMediaMetadata)&key=${googleApiKey}`, {
           headers: fetchHeaders
@@ -326,17 +183,15 @@ async function startServer() {
         });
 
         // Try to fetch folder details (optional, best effort)
-        let folderName = customSedeName || 'Pasta do Google Drive';
-        if (!customSedeName) {
-          try {
-             const fRes = await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=name&key=${googleApiKey}`);
-             if (fRes.ok) {
-                const fData: any = await fRes.json();
-                if (fData.name) folderName = fData.name;
-             }
-          } catch (e) {
-             console.warn('Could not fetch folder name', e);
-          }
+        let folderName = 'Pasta do Google Drive';
+        try {
+           const fRes = await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=name&key=${googleApiKey}`);
+           if (fRes.ok) {
+              const fData: any = await fRes.json();
+              if (fData.name) folderName = fData.name;
+           }
+        } catch (e) {
+           console.warn('Could not fetch folder name', e);
         }
 
         return res.json({
@@ -344,8 +199,6 @@ async function startServer() {
           isPublicLink: true,
           folderName,
           files,
-          trainAlerts: matchedSede?.trainAlerts || [],
-          sede: matchedSede,
         });
 
       } catch (e: any) {
@@ -353,10 +206,8 @@ async function startServer() {
         return res.json({ 
           isDemo: true, 
           error: `Não foi possível acessar a pasta do Google Drive. Detalhes: ${e.message}. Certifique-se de que a pasta é pública ("Qualquer pessoa com o link").`, 
-          folderName: customSedeName || 'Link com Erro', 
-          files: [],
-          trainAlerts: matchedSede?.trainAlerts || [],
-          sede: matchedSede,
+          folderName: 'Link com Erro', 
+          files: [] 
         });
       }
     }
@@ -364,15 +215,13 @@ async function startServer() {
     // Default empty state
     return res.json({
       isDemo: true,
-      folderName: 'Nenhuma pasta ou sede configurada',
+      folderName: 'Nenhuma pasta configurada',
       files: [],
-      trainAlerts: matchedSede?.trainAlerts || [],
-      sede: matchedSede,
     });
   });
 
   // 5. Proxy endpoint to download/stream Google Drive media bypassing 403
-  app.get('/api/drive/media/:id', (req, res) => {
+  app.get('/api/drive/media/:id', async (req, res) => {
     try {
       const fileId = req.params.id;
       const googleApiKey = process.env.GOOGLE_API_KEY;
@@ -382,52 +231,38 @@ async function startServer() {
       
       const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
       
-      const headers: Record<string, string> = {};
-      if (req.headers.range) {
-        headers['Range'] = req.headers.range;
-      }
-      const referer = getRefererHeader(req);
-      if (referer) {
-        headers['Referer'] = referer;
-      }
+      const fetchHeaders: any = {};
+      if (req.headers.range) fetchHeaders['Range'] = req.headers.range;
+      if (req.headers.referer) fetchHeaders['Referer'] = req.headers.referer;
+      else if (process.env.APP_URL) fetchHeaders['Referer'] = process.env.APP_URL;
 
-      const clientReq = https.get(url, { headers, agent: keepAliveAgent }, (apiRes) => {
-        const statusCode = apiRes.statusCode || 200;
-        res.status(statusCode);
-
-        // Instruct browser and Smart TVs to cache the files (essential for looping slideshow speed)
-        res.setHeader('Cache-Control', 'public, max-age=1800');
-
-        // Forward safe headers
-        const safeHeaders = [
-          'content-type',
-          'content-length',
-          'accept-ranges',
-          'content-range',
-          'last-modified',
-          'etag'
-        ];
-        for (const [key, value] of Object.entries(apiRes.headers)) {
-          if (safeHeaders.includes(key.toLowerCase()) && value !== undefined) {
-            res.setHeader(key, value);
-          }
-        }
-
-        // Pipe directly for native high-performance, low-memory streaming
-        apiRes.pipe(res);
+      const response = await fetch(url, {
+        headers: fetchHeaders
       });
 
-      clientReq.on('error', (err) => {
-        console.error('Error proxying media via https.get:', err);
-        if (!res.headersSent) {
-          res.status(500).send('Internal server error proxying file');
+      if (!response.ok) {
+         console.error(`Google API Error (${response.status}):`, await response.text());
+         return res.status(response.status).send('Error fetching media');
+      }
+
+      res.status(response.status);
+      
+      // Forward safe headers
+      response.headers.forEach((value, key) => {
+        const lowerKey = key.toLowerCase();
+        if (['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control', 'last-modified', 'etag'].includes(lowerKey)) {
+          res.setHeader(key, value);
         }
       });
+      
+      if (response.body) {
+        Readable.fromWeb(response.body as any).pipe(res);
+      } else {
+        res.end();
+      }
     } catch (e) {
       console.error('Error proxying media file:', e);
-      if (!res.headersSent) {
-        res.status(500).send('Internal server error proxying file');
-      }
+      if (!res.headersSent) res.status(500).send('Internal server error proxying file');
     }
   });
 
