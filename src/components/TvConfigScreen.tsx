@@ -747,19 +747,35 @@ export function TvConfigScreen({
                       </div>
                     )}
 
-                    {/* Image Viewport (occupies remaining height without overlap) */}
+                    {/* Media Viewport (occupies remaining height without overlap) */}
                     <div className="flex-1 w-full min-h-0 relative flex items-center justify-center p-1 bg-slate-950 overflow-hidden">
-                      <img
-                        src={mediaFiles[previewIndex]?.downloadUrl || ''}
-                        alt={mediaFiles[previewIndex]?.name}
-                        className="w-full h-full object-contain transition-all duration-700"
-                      />
+                      {mediaFiles[previewIndex]?.isVideo ? (
+                        <video
+                          src={mediaFiles[previewIndex]?.downloadUrl || ''}
+                          muted
+                          autoPlay
+                          loop
+                          playsInline
+                          className="w-full h-full object-contain"
+                        />
+                      ) : (
+                        <img
+                          src={mediaFiles[previewIndex]?.downloadUrl || ''}
+                          alt={mediaFiles[previewIndex]?.name}
+                          className="w-full h-full object-contain transition-all duration-700"
+                        />
+                      )}
 
                       {/* Overlay info */}
                       <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-3 flex items-center justify-between text-xs">
-                        <span className="text-slate-300 truncate max-w-xs font-mono text-[11px]">
-                          {mediaFiles[previewIndex]?.name}
-                        </span>
+                        <div className="flex items-center space-x-2 truncate max-w-xs">
+                          {mediaFiles[previewIndex]?.isVideo && (
+                            <span className="bg-blue-500/80 text-white text-[9px] px-1.5 py-0.5 rounded font-mono font-bold">VÍDEO</span>
+                          )}
+                          <span className="text-slate-300 truncate font-mono text-[11px]">
+                            {mediaFiles[previewIndex]?.name}
+                          </span>
+                        </div>
                         <span className="text-slate-400 font-mono bg-black/60 px-2 py-0.5 rounded text-[10px]">
                           {previewIndex + 1} / {mediaFiles.length}
                         </span>

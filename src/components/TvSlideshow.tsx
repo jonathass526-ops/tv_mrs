@@ -7,11 +7,13 @@ import {
   ChevronRight, 
   AlertTriangle, 
   Clock, 
-  Folder,
-  Train,
-  Bell,
-  Sparkles,
-  FlaskConical
+  Folder, 
+  Train, 
+  Bell, 
+  Sparkles, 
+  FlaskConical,
+  Loader2,
+  Video as VideoIcon
 } from 'lucide-react';
 import { TVDevice, MediaFile, TrainAlertInfo } from '../types';
 import { calculateTrainAlert } from '../utils/trainAlerts';
@@ -32,10 +34,19 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
   const [showControls, setShowControls] = useState(false);
   const [testMode, setTestMode] = useState<'off' | 'banner' | 'fullscreen'>(initialTestMode);
 
+  // Video Streaming & Watchdog State
+  const [isVideoLoading, setIsVideoLoading] = useState(false);
+  const [videoElapsedSeconds, setVideoElapsedSeconds] = useState(0);
+  const [videoHasStarted, setVideoHasStarted] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const videoTickRef = useRef<NodeJS.Timeout | null>(null);
+
   const autoPlayTimer = useRef<NodeJS.Timeout | null>(null);
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
 
   const mediaFiles = useMemo(() => files.filter(f => f.isImage || f.isVideo || f.isPdf), [files]);
+  const currentMedia = mediaFiles[renderedIndex] || null;
 
   // Train Departure Alert Logic (90m top banner / 15m full screen / test mode)
   const trainAlert = useMemo<TrainAlertInfo | null>(() => {
@@ -105,12 +116,15 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
     }, 450);
   }, [mediaFiles.length]);
 
-  // Slideshow Auto-Play Engine (PAUSES COMPLETELY only when FULLSCREEN alert is active)
+  // Slideshow Auto-Play Engine for Images (PAUSES when video or full alert is active)
   useEffect(() => {
     if (autoPlayTimer.current) clearTimeout(autoPlayTimer.current);
 
     // If fullscreen train alert is active, pause image cycling
     if (trainAlert?.level === 'fullscreen') return;
+
+    // If current media is a video, duration is controlled by video playback & 30s watchdog
+    if (currentMedia?.isVideo) return;
 
     if (isPlaying && mediaFiles.length > 1) {
       autoPlayTimer.current = setTimeout(() => {
@@ -121,7 +135,70 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
     return () => {
       if (autoPlayTimer.current) clearTimeout(autoPlayTimer.current);
     };
-  }, [isPlaying, mediaFiles.length, tv.transitionSpeed, handleNextSlide, currentIndex, trainAlert?.level]);
+  }, [isPlaying, mediaFiles.length, tv.transitionSpeed, handleNextSlide, currentIndex, trainAlert?.level, currentMedia]);
+
+  // Video Streaming 30-Second Start Watchdog
+  useEffect(() => {
+    if (videoTimeoutRef.current) clearTimeout(videoTimeoutRef.current);
+    if (videoTickRef.current) clearInterval(videoTickRef.current);
+
+    if (currentMedia?.isVideo && isPlaying && trainAlert?.level !== 'fullscreen') {
+      setIsVideoLoading(true);
+      setVideoHasStarted(false);
+      setVideoElapsedSeconds(0);
+
+      // Tick seconds for UI countdown / feedback
+      videoTickRef.current = setInterval(() => {
+        setVideoElapsedSeconds(prev => prev + 1);
+      }, 1000);
+
+      // 30-second watchdog: if video hasn't started playing within 30s, advance to next file
+      videoTimeoutRef.current = setTimeout(() => {
+        console.warn(`[Watchdog] Vídeo "${currentMedia.name}" não iniciou após 30 segundos de conexão com Google Drive. Pulando para o próximo slide...`);
+        if (videoTickRef.current) clearInterval(videoTickRef.current);
+        handleNextSlide();
+      }, 30000);
+    } else {
+      setIsVideoLoading(false);
+      setVideoHasStarted(false);
+    }
+
+    return () => {
+      if (videoTimeoutRef.current) clearTimeout(videoTimeoutRef.current);
+      if (videoTickRef.current) clearInterval(videoTickRef.current);
+    };
+  }, [renderedIndex, currentMedia?.id, currentMedia?.isVideo, isPlaying, trainAlert?.level, handleNextSlide]);
+
+  // Video play/pause synchronization
+  useEffect(() => {
+    if (!videoRef.current) return;
+    if (isPlaying && trainAlert?.level !== 'fullscreen') {
+      videoRef.current.play().catch(err => {
+        console.warn('Vídeo auto-play pausado pelo navegador:', err);
+      });
+    } else {
+      videoRef.current.pause();
+    }
+  }, [isPlaying, trainAlert?.level, renderedIndex]);
+
+  // Video event handlers
+  const handleVideoPlaying = () => {
+    setIsVideoLoading(false);
+    setVideoHasStarted(true);
+    if (videoTimeoutRef.current) clearTimeout(videoTimeoutRef.current);
+    if (videoTickRef.current) clearInterval(videoTickRef.current);
+  };
+
+  const handleVideoError = (e: any) => {
+    console.error(`Erro no stream de vídeo "${currentMedia?.name}":`, e);
+    setIsVideoLoading(false);
+    if (videoTimeoutRef.current) clearTimeout(videoTimeoutRef.current);
+    if (videoTickRef.current) clearInterval(videoTickRef.current);
+    // Move to next slide on error after 1.5 seconds so screen does not lock
+    setTimeout(() => {
+      handleNextSlide();
+    }, 1500);
+  };
 
   // Mouse move / interaction handler to show controls temporarily on mouse activity
   const handleUserActivity = () => {
@@ -153,8 +230,6 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onExit, handleNextSlide, handlePrevSlide]);
-
-  const currentMedia = mediaFiles[renderedIndex] || null;
 
   return (
     <div 
@@ -292,14 +367,56 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
                     className="w-full h-full object-contain pointer-events-none drop-shadow-2xl"
                   />
                 ) : currentMedia?.isVideo ? (
-                  <video
-                    src={currentMedia.downloadUrl || ''}
-                    autoPlay
-                    muted
-                    playsInline
-                    onEnded={handleNextSlide}
-                    className="w-full h-full object-contain"
-                  />
+                  <div className="relative w-full h-full flex items-center justify-center">
+                    <video
+                      ref={videoRef}
+                      key={currentMedia.id}
+                      src={currentMedia.downloadUrl || ''}
+                      autoPlay
+                      muted
+                      playsInline
+                      preload="auto"
+                      onPlaying={handleVideoPlaying}
+                      onTimeUpdate={() => {
+                        if (!videoHasStarted) handleVideoPlaying();
+                      }}
+                      onWaiting={() => setIsVideoLoading(true)}
+                      onError={handleVideoError}
+                      onEnded={handleNextSlide}
+                      className="w-full h-full object-contain"
+                    />
+
+                    {/* Google Direct Stream Connection Watchdog Indicator (if connecting) */}
+                    {isVideoLoading && !videoHasStarted && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-20 transition-all duration-300">
+                        <div className="bg-slate-950/90 border border-blue-500/40 rounded-2xl p-6 shadow-2xl flex flex-col items-center space-y-3 max-w-sm text-center">
+                          <div className="relative flex items-center justify-center">
+                            <Loader2 className="w-10 h-10 text-blue-400 animate-spin" />
+                            <VideoIcon className="w-4 h-4 text-blue-300 absolute" />
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-bold text-slate-100">
+                              Transmitindo Vídeo do Google Drive
+                            </h3>
+                            <p className="text-xs text-slate-400 mt-1 font-mono">
+                              Conexão direta sem download na TV
+                            </p>
+                          </div>
+                          
+                          {/* 30s Watchdog Countdown Bar */}
+                          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden mt-2">
+                            <div 
+                              className="bg-blue-500 h-full transition-all duration-1000 ease-linear"
+                              style={{ width: `${Math.min(100, (videoElapsedSeconds / 30) * 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-[11px] font-mono text-slate-400">
+                            Aguardando início: <b className="text-blue-400">{30 - videoElapsedSeconds}s</b> restante
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="text-center text-slate-400 font-mono text-xl">
                     {currentMedia?.name}

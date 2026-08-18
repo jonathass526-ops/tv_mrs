@@ -248,7 +248,23 @@ async function startServer() {
     });
   });
 
-  // 5. Proxy endpoint to download/stream Google Drive media bypassing 403
+  // Helper to determine mime type
+  function getMediaMimeType(filename: string, fallbackMime?: string): string {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    if (lower.endsWith('.webm')) return 'video/webm';
+    if (lower.endsWith('.ogg') || lower.endsWith('.ogv')) return 'video/ogg';
+    if (lower.endsWith('.mov')) return 'video/quicktime';
+    if (lower.endsWith('.mkv')) return 'video/x-matroska';
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    if (lower.endsWith('.gif')) return 'image/gif';
+    if (lower.endsWith('.svg')) return 'image/svg+xml';
+    return fallbackMime || 'application/octet-stream';
+  }
+
+  // 5. Proxy endpoint to download/stream Google Drive media directly without saving to TV disk
   app.get('/api/drive/media/:id', async (req, res) => {
     try {
       const fileId = req.params.id;
@@ -269,13 +285,17 @@ async function startServer() {
       });
 
       if (!response.ok) {
-         console.error(`Google API Error (${response.status}):`, await response.text());
-         return res.status(response.status).send('Error fetching media');
+         console.error(`Google Drive Stream Error (${response.status}):`, await response.text());
+         return res.status(response.status).send('Error streaming media from Google Drive');
       }
 
       res.status(response.status);
       
-      // Forward safe headers
+      // Explicitly allow range streaming and inline rendering (so video plays in-memory directly from Google without downloading to disk)
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Disposition', 'inline');
+      
+      // Forward safe headers from Google
       response.headers.forEach((value, key) => {
         const lowerKey = key.toLowerCase();
         if (['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control', 'last-modified', 'etag'].includes(lowerKey)) {
@@ -289,7 +309,7 @@ async function startServer() {
         res.end();
       }
     } catch (e) {
-      console.error('Error proxying media file:', e);
+      console.error('Error proxying media stream:', e);
       if (!res.headersSent) res.status(500).send('Internal server error proxying file');
     }
   });
