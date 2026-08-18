@@ -362,8 +362,19 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
               >
                 {currentMedia?.isImage ? (
                   <img
-                    src={currentMedia.downloadUrl || ''}
+                    key={currentMedia.id}
+                    src={currentMedia.directUrl || currentMedia.downloadUrl || ''}
                     alt={currentMedia.name}
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      // Fallback to proxy url or google cdn if directUrl fails
+                      const target = e.currentTarget;
+                      if (currentMedia.downloadUrl && target.src !== window.location.origin + currentMedia.downloadUrl) {
+                        target.src = currentMedia.downloadUrl;
+                      } else if (!target.src.includes('lh3.googleusercontent.com')) {
+                        target.src = `https://lh3.googleusercontent.com/d/${currentMedia.id}=w2560-h1440`;
+                      }
+                    }}
                     className="w-full h-full object-contain pointer-events-none drop-shadow-2xl"
                   />
                 ) : currentMedia?.isVideo ? (

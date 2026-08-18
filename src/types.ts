@@ -29,6 +29,7 @@ export interface MediaFile {
   size: number;
   webUrl: string;
   downloadUrl: string | null;
+  directUrl?: string | null;
   isImage: boolean;
   isVideo: boolean;
   isPdf?: boolean;

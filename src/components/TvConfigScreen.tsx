@@ -760,8 +760,19 @@ export function TvConfigScreen({
                         />
                       ) : (
                         <img
-                          src={mediaFiles[previewIndex]?.downloadUrl || ''}
+                          key={mediaFiles[previewIndex]?.id}
+                          src={mediaFiles[previewIndex]?.directUrl || mediaFiles[previewIndex]?.downloadUrl || ''}
                           alt={mediaFiles[previewIndex]?.name}
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            const target = e.currentTarget;
+                            const f = mediaFiles[previewIndex];
+                            if (f?.downloadUrl && target.src !== window.location.origin + f.downloadUrl) {
+                              target.src = f.downloadUrl;
+                            } else if (f?.id && !target.src.includes('lh3.googleusercontent.com')) {
+                              target.src = `https://lh3.googleusercontent.com/d/${f.id}=w2560-h1440`;
+                            }
+                          }}
                           className="w-full h-full object-contain transition-all duration-700"
                         />
                       )}

@@ -177,9 +177,7 @@ async function startServer() {
         if (req.headers.referer) fetchHeaders['Referer'] = req.headers.referer;
         else if (process.env.APP_URL) fetchHeaders['Referer'] = process.env.APP_URL;
 
-        const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodedQ}&fields=files(id,name,mimeType,size,webContentLink,webViewLink,createdTime,videoMediaMetadata)&key=${googleApiKey}`, {
-          headers: fetchHeaders
-        });
+        const response = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodedQ}&fields=files(id,name,mimeType,size,webContentLink,webViewLink,createdTime,videoMediaMetadata,thumbnailLink)&key=${googleApiKey}`);
 
         if (!response.ok) {
           const errText = await response.text();
@@ -191,20 +189,27 @@ async function startServer() {
         const files = (data.files || []).map((item: any) => {
           const nameLower = (item.name || '').toLowerCase();
           const isImage = item.mimeType?.startsWith('image/') || isImageExtension(item.name);
-          const isVideo = item.mimeType?.startsWith('video/') || nameLower.endsWith('.mp4') || nameLower.endsWith('.webm') || nameLower.endsWith('.ogg');
+          const isVideo = item.mimeType?.startsWith('video/') || nameLower.endsWith('.mp4') || nameLower.endsWith('.webm') || nameLower.endsWith('.ogg') || nameLower.endsWith('.mov') || nameLower.endsWith('.mkv');
           const isPdf = item.mimeType === 'application/pdf' || nameLower.endsWith('.pdf');
           
+          // High-res direct Google CDN URL for images
+          let directCdnUrl = `https://lh3.googleusercontent.com/d/${item.id}=w2560-h1440`;
+          if (item.thumbnailLink) {
+            directCdnUrl = item.thumbnailLink.replace(/=s\d+.*$/, '=s0');
+          }
+
           return {
             id: item.id,
             name: item.name,
             size: item.size || 0,
             webUrl: item.webViewLink,
             downloadUrl: `/api/drive/media/${item.id}`,
+            directUrl: isImage ? directCdnUrl : `/api/drive/media/${item.id}`,
             isImage,
             isVideo,
             isPdf,
             lastModified: item.createdTime,
-            mimeType: item.mimeType || (isImage ? 'image/jpeg' : (isVideo ? 'video/mp4' : (isPdf ? 'application/pdf' : 'application/octet-stream'))),
+            mimeType: item.mimeType || getMediaMimeType(item.name),
             durationMillis: item.videoMediaMetadata?.durationMillis ? parseInt(item.videoMediaMetadata.durationMillis, 10) : undefined,
           };
         });
@@ -269,42 +274,74 @@ async function startServer() {
     try {
       const fileId = req.params.id;
       const googleApiKey = process.env.GOOGLE_API_KEY;
-      if (!googleApiKey) {
-        return res.status(500).json({ error: 'Google API key missing.' });
-      }
-      
-      const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
       
       const fetchHeaders: any = {};
       if (req.headers.range) fetchHeaders['Range'] = req.headers.range;
-      if (req.headers.referer) fetchHeaders['Referer'] = req.headers.referer;
-      else if (process.env.APP_URL) fetchHeaders['Referer'] = process.env.APP_URL;
 
-      const response = await fetch(url, {
-        headers: fetchHeaders
-      });
+      let upstreamResponse: Response | null = null;
 
-      if (!response.ok) {
-         console.error(`Google Drive Stream Error (${response.status}):`, await response.text());
-         return res.status(response.status).send('Error streaming media from Google Drive');
+      // Strategy 1: Google Drive API (Official alt=media)
+      if (googleApiKey) {
+        try {
+          const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
+          const r = await fetch(url, { headers: fetchHeaders });
+          if (r.ok || r.status === 206) {
+            upstreamResponse = r;
+          } else {
+            console.warn(`Drive API stream failed (${r.status}) for ${fileId}, trying CDN fallback...`);
+          }
+        } catch (e) {
+          console.warn(`Drive API fetch error for ${fileId}:`, e);
+        }
       }
 
-      res.status(response.status);
+      // Strategy 2: Google CDN (lh3.googleusercontent.com for public files)
+      if (!upstreamResponse) {
+        try {
+          const cdnUrl = `https://lh3.googleusercontent.com/d/${fileId}=w2560-h1440`;
+          const r = await fetch(cdnUrl, { headers: fetchHeaders });
+          if (r.ok || r.status === 206) {
+            upstreamResponse = r;
+          }
+        } catch (e) {
+          console.warn(`CDN fallback error for ${fileId}:`, e);
+        }
+      }
+
+      // Strategy 3: Google Drive UC Export Download
+      if (!upstreamResponse) {
+        try {
+          const ucUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+          const r = await fetch(ucUrl, { headers: fetchHeaders, redirect: 'follow' });
+          if (r.ok || r.status === 206) {
+            upstreamResponse = r;
+          }
+        } catch (e) {
+          console.warn(`UC fallback error for ${fileId}:`, e);
+        }
+      }
+
+      if (!upstreamResponse) {
+        return res.status(404).send('Media not found or not accessible on Google Drive');
+      }
+
+      res.status(upstreamResponse.status);
       
-      // Explicitly allow range streaming and inline rendering (so video plays in-memory directly from Google without downloading to disk)
+      // Explicitly allow range streaming and inline rendering (so video/images display directly in-memory)
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       
       // Forward safe headers from Google
-      response.headers.forEach((value, key) => {
+      upstreamResponse.headers.forEach((value, key) => {
         const lowerKey = key.toLowerCase();
         if (['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control', 'last-modified', 'etag'].includes(lowerKey)) {
           res.setHeader(key, value);
         }
       });
       
-      if (response.body) {
-        Readable.fromWeb(response.body as any).pipe(res);
+      if (upstreamResponse.body) {
+        Readable.fromWeb(upstreamResponse.body as any).pipe(res);
       } else {
         res.end();
       }
