@@ -15,7 +15,8 @@ import {
   Sparkles,
   RefreshCw,
   MonitorPlay,
-  Train
+  Train,
+  CloudCheck
 } from 'lucide-react';
 import { TVDevice, TrainAlertInfo, normalizeTrainSchedules } from '../types';
 import { calculateTrainAlert } from '../utils/trainAlerts';
@@ -100,6 +101,11 @@ export function TvListScreen({
           </div>
 
           <div className="flex items-center space-x-3">
+            <div className="hidden sm:flex items-center space-x-1.5 bg-emerald-950/40 border border-emerald-500/30 px-3 py-1.5 rounded-xl text-emerald-400 text-xs font-mono">
+              <CloudCheck className="w-3.5 h-3.5" />
+              <span>Nuvem Firebase Conectada</span>
+            </div>
+
             <div className="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl flex items-center space-x-2 text-slate-300 text-xs font-mono">
               <Clock className="w-3.5 h-3.5 text-amber-400" />
               <span>{currentTime || '--:--:--'}</span>

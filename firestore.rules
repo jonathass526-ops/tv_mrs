@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // TV devices collection - allow read & write for TV signage management
+    match /devices/{deviceId} {
+      allow read, write: if true;
+    }
+    
+    // Global configurations collection
+    match /config/{configId} {
+      allow read, write: if true;
+    }
+  }
+}

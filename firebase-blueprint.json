@@ -1,0 +1,32 @@
+{
+  "entities": {
+    "TVDevice": {
+      "collection": "devices",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "location": { "type": "string", "required": false },
+        "folderUrl": { "type": "string", "required": false },
+        "folderId": { "type": "string", "required": false },
+        "folderName": { "type": "string", "required": false },
+        "trainSchedules": { "type": "array", "required": true },
+        "transitionSpeed": { "type": "number", "required": true },
+        "transitionEffect": { "type": "string", "required": true },
+        "showFileName": { "type": "boolean", "required": true },
+        "showClock": { "type": "boolean", "required": true },
+        "showUiInSlideshow": { "type": "boolean", "required": true },
+        "autoRefresh": { "type": "boolean", "required": true },
+        "autoRefreshRate": { "type": "number", "required": true },
+        "createdAt": { "type": "string", "required": true },
+        "updatedAt": { "type": "string", "required": true }
+      }
+    },
+    "GlobalConfig": {
+      "collection": "config",
+      "fields": {
+        "publicSharingUrl": { "type": "string", "required": false },
+        "updatedAt": { "type": "string", "required": false }
+      }
+    }
+  }
+}

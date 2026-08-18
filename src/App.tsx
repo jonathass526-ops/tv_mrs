@@ -5,6 +5,12 @@ import { TvListScreen } from './components/TvListScreen';
 import { TvConfigScreen } from './components/TvConfigScreen';
 import { TvSlideshow } from './components/TvSlideshow';
 import { NewTvModal } from './components/NewTvModal';
+import { 
+  subscribeToDevices, 
+  saveDeviceToFirestore, 
+  deleteDeviceFromFirestore 
+} from './lib/firebase';
+import { Cloud, CloudCheck, Loader2 } from 'lucide-react';
 
 const DEFAULT_TVS: TVDevice[] = [
   {
@@ -36,8 +42,35 @@ export default function App() {
   const [slideshowTestMode, setSlideshowTestMode] = useState<'off' | 'banner' | 'fullscreen'>('off');
   const [isNewTvModalOpen, setIsNewTvModalOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState('');
+  const [isCloudSynced, setIsCloudSynced] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const clockTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Firestore Real-Time Cloud Synchronization
+  useEffect(() => {
+    setIsSyncing(true);
+    const unsubscribe = subscribeToDevices(
+      (firestoreDevices) => {
+        setIsSyncing(false);
+        setIsCloudSynced(true);
+        if (firestoreDevices.length > 0) {
+          setTvs(firestoreDevices);
+        } else {
+          // If Firestore database is brand new and empty, seed initial default TV
+          DEFAULT_TVS.forEach(dev => saveDeviceToFirestore(dev));
+        }
+      },
+      (error) => {
+        console.error('Erro na sincronização com Firebase:', error);
+        setIsSyncing(false);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [setTvs]);
 
   // Normalize all stored TVs so trainSchedules is always TrainSchedule[]
   const tvs = useMemo(() => {
@@ -98,12 +131,18 @@ export default function App() {
     return tvs.find(t => t.id === selectedTvId) || tvs[0] || DEFAULT_TVS[0];
   }, [tvs, selectedTvId]);
 
-  // Handler to create a new TV and IMMEDIATELY open its config screen
-  const handleCreateTv = (newTv: TVDevice) => {
+  // Handler to create a new TV (Persisted to Firestore & local)
+  const handleCreateTv = async (newTv: TVDevice) => {
     setTvs(prev => [...prev, newTv]);
     setSelectedTvId(newTv.id);
     setIsNewTvModalOpen(false);
     setCurrentView('config'); // Opens Screen 2 immediately
+    
+    try {
+      await saveDeviceToFirestore(newTv);
+    } catch (e) {
+      console.error('Erro ao salvar nova TV no Firestore:', e);
+    }
   };
 
   // Handler to select an existing TV to configure
@@ -118,13 +157,18 @@ export default function App() {
     setCurrentView('slideshow');
   };
 
-  // Handler to update an existing TV
-  const handleUpdateTv = (updatedTv: TVDevice) => {
+  // Handler to update an existing TV (Persisted to Firestore & local)
+  const handleUpdateTv = async (updatedTv: TVDevice) => {
     setTvs(prev => prev.map(t => (t.id === updatedTv.id ? updatedTv : t)));
+    try {
+      await saveDeviceToFirestore(updatedTv);
+    } catch (e) {
+      console.error('Erro ao atualizar TV no Firestore:', e);
+    }
   };
 
-  // Handler to delete a TV
-  const handleDeleteTv = (tvId: string) => {
+  // Handler to delete a TV (Persisted to Firestore & local)
+  const handleDeleteTv = async (tvId: string) => {
     setTvs(prev => {
       const next = prev.filter(t => t.id !== tvId);
       if (next.length === 0) {
@@ -136,10 +180,16 @@ export default function App() {
       setSelectedTvId(tvs[0]?.id || 'tv_principal');
       setCurrentView('list');
     }
+
+    try {
+      await deleteDeviceFromFirestore(tvId);
+    } catch (e) {
+      console.error('Erro ao deletar TV no Firestore:', e);
+    }
   };
 
-  // Handler to duplicate a TV
-  const handleDuplicateTv = (tv: TVDevice) => {
+  // Handler to duplicate a TV (Persisted to Firestore & local)
+  const handleDuplicateTv = async (tv: TVDevice) => {
     const duplicated: TVDevice = {
       ...tv,
       id: `tv_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
@@ -148,6 +198,11 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
     setTvs(prev => [...prev, duplicated]);
+    try {
+      await saveDeviceToFirestore(duplicated);
+    } catch (e) {
+      console.error('Erro ao duplicar TV no Firestore:', e);
+    }
   };
 
   return (
