@@ -69,6 +69,26 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Helper to extract folderId from any Google Drive link or raw ID
+  function extractFolderId(input: string): string | null {
+    if (!input) return null;
+    const trimmed = input.trim();
+    const gDriveFolderRegex = /\/folders\/([a-zA-Z0-9-_]+)/;
+    const gDriveIdParamRegex = /[?&]id=([a-zA-Z0-9-_]+)/;
+    
+    const matchFolder = trimmed.match(gDriveFolderRegex);
+    if (matchFolder && matchFolder[1]) return matchFolder[1];
+    
+    const matchId = trimmed.match(gDriveIdParamRegex);
+    if (matchId && matchId[1]) return matchId[1];
+    
+    // If it's already an ID (no slashes, typical alphanumeric with hyphens/underscores)
+    if (/^[a-zA-Z0-9-_]{10,}$/.test(trimmed)) {
+      return trimmed;
+    }
+    return null;
+  }
+
   // 3. Set Public Sharing Link (Google Drive)
   app.post('/api/drive/public-link', (req, res) => {
     let { url } = req.body;
@@ -76,23 +96,7 @@ async function startServer() {
       return res.status(400).json({ error: 'URL do link de compartilhamento não fornecida.' });
     }
 
-    url = url.trim();
-
-    // Extract Google Drive Folder ID
-    let folderId = null;
-    const gDriveFolderRegex = /\/folders\/([a-zA-Z0-9-_]+)/;
-    const gDriveIdParamRegex = /id=([a-zA-Z0-9-_]+)/;
-
-    const matchFolder = url.match(gDriveFolderRegex);
-    if (matchFolder && matchFolder[1]) {
-      folderId = matchFolder[1];
-    } else {
-      const matchId = url.match(gDriveIdParamRegex);
-      if (matchId && matchId[1]) {
-        folderId = matchId[1];
-      }
-    }
-
+    const folderId = extractFolderId(url);
     if (!folderId) {
       return res.status(400).json({ error: 'Link inválido. Certifique-se de que é um link válido de uma pasta do Google Drive.' });
     }
@@ -102,7 +106,40 @@ async function startServer() {
       selectedFolder: null, // Reset manual folder if public link is configured
     });
 
-    res.json({ success: true, publicSharingUrl: configState.publicSharingUrl });
+    res.json({ success: true, publicSharingUrl: configState.publicSharingUrl, folderId });
+  });
+
+  // 3b. Validate Folder Link
+  app.post('/api/drive/validate-folder', async (req, res) => {
+    const { url } = req.body;
+    if (!url) {
+      return res.status(400).json({ valid: false, error: 'URL não fornecida.' });
+    }
+    const folderId = extractFolderId(url);
+    if (!folderId) {
+      return res.status(400).json({ valid: false, error: 'Formato de link do Google Drive inválido.' });
+    }
+
+    const googleApiKey = process.env.GOOGLE_API_KEY;
+    if (!googleApiKey) {
+      return res.json({ 
+        valid: true, 
+        folderId, 
+        folderName: 'Pasta do Google Drive', 
+        warning: 'Chave GOOGLE_API_KEY não configurada no servidor.' 
+      });
+    }
+
+    try {
+      const fRes = await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name&key=${googleApiKey}`);
+      if (fRes.ok) {
+        const fData: any = await fRes.json();
+        return res.json({ valid: true, folderId, folderName: fData.name || 'Pasta do Google Drive' });
+      }
+      return res.json({ valid: true, folderId, folderName: 'Pasta do Google Drive' });
+    } catch (e: any) {
+      return res.json({ valid: true, folderId, folderName: 'Pasta do Google Drive' });
+    }
   });
 
   // 6c. Clear Public Link
@@ -113,10 +150,13 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // 4. Get Files in Selected Folder (Supports Real, Public Link, and Demo/Simulation Mode)
+  // 4. Get Files in Selected Folder (Supports specific TV folder or default config)
   app.get('/api/drive/files', async (req, res) => {
+    const rawTarget = (req.query.folderId as string) || (req.query.url as string) || configState.publicSharingUrl;
+    const targetFolderId = rawTarget ? extractFolderId(rawTarget) : null;
+
     // If a Public Sharing Link is configured (Google Drive)
-    if (configState.publicSharingUrl) {
+    if (targetFolderId) {
       const googleApiKey = process.env.GOOGLE_API_KEY;
       if (!googleApiKey) {
          return res.json({
@@ -128,20 +168,7 @@ async function startServer() {
       }
 
       try {
-        let folderId = configState.publicSharingUrl;
-        
-        // Extract ID if it's a full URL (backwards compatibility)
-        const gDriveFolderRegex = /\/folders\/([a-zA-Z0-9-_]+)/;
-        const gDriveIdParamRegex = /id=([a-zA-Z0-9-_]+)/;
-        const matchFolder = folderId.match(gDriveFolderRegex);
-        if (matchFolder && matchFolder[1]) {
-          folderId = matchFolder[1];
-        } else {
-          const matchId = folderId.match(gDriveIdParamRegex);
-          if (matchId && matchId[1]) {
-            folderId = matchId[1];
-          }
-        }
+        const folderId = targetFolderId;
         
         console.log(`Buscando arquivos da pasta do Google Drive: ${folderId}`);
         const q = `'${folderId}' in parents and trashed=false`;
@@ -197,6 +224,7 @@ async function startServer() {
         return res.json({
           isDemo: false,
           isPublicLink: true,
+          folderId,
           folderName,
           files,
         });

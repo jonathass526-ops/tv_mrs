@@ -1,6 +1,6 @@
 {
   "name": "OneDrive Slideshow & File Viewer",
-  "description": "Exiba automaticamente imagens e arquivos de um diretório específico do seu OneDrive em uma tela de slideshow elegante, com transições, modo de tela cheia e atualização automática.",
+  "description": "Gerenciador de múltiplas telas de TV com exibição de fotos do Google Drive e sistema de alertas de formação/partida de trens (KPC) com cronômetro regressivo de 15 minutos.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
