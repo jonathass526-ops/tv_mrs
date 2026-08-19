@@ -28,6 +28,8 @@ const DEFAULT_TVS: TVDevice[] = [
     showFileName: true,
     showClock: true,
     showUiInSlideshow: true,
+    videoAudioEnabled: true,
+    videoVolume: 1.0,
     autoRefresh: true,
     autoRefreshRate: 60000,
     createdAt: new Date().toISOString(),

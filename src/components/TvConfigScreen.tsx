@@ -24,7 +24,9 @@ import {
   Trash2,
   MonitorPlay,
   Train,
-  Bell
+  Bell,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { TVDevice, MediaFile, TrainSchedule, TrainAlertInfo, normalizeTrainSchedules } from '../types';
 import { calculateTrainAlert } from '../utils/trainAlerts';
@@ -661,6 +663,55 @@ export function TvConfigScreen({
                     }}
                     className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-0"
                   />
+                </div>
+
+                <div className="pt-2 border-t border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-1.5">
+                      <Volume2 className="w-3.5 h-3.5 text-blue-400" />
+                      <span className="text-xs text-slate-300 font-medium">Som do Vídeo Ativado</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={tv.videoAudioEnabled ?? true}
+                      onChange={(e) => {
+                        onUpdateTv({
+                          ...tv,
+                          videoAudioEnabled: e.target.checked,
+                          updatedAt: new Date().toISOString(),
+                        });
+                      }}
+                      className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-0"
+                    />
+                  </div>
+
+                  {(tv.videoAudioEnabled ?? true) && (
+                    <div className="space-y-1 pl-5">
+                      <div className="flex justify-between text-[11px] text-slate-400">
+                        <span>Volume Inicial</span>
+                        <span>{Math.round((tv.videoVolume ?? 1) * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={tv.videoVolume ?? 1}
+                        onChange={(e) => {
+                          onUpdateTv({
+                            ...tv,
+                            videoVolume: parseFloat(e.target.value),
+                            updatedAt: new Date().toISOString(),
+                          });
+                        }}
+                        className="w-full h-1.5 bg-slate-950 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  <p className="text-[10px] text-slate-500 leading-tight">
+                    * Navegadores e TVs bloqueiam som automático até que o usuário clique 1 vez na tela ou pressione OK no controle. O player exibe um botão para desbloquear com 1 clique caso necessário.
+                  </p>
                 </div>
               </div>
             </div>

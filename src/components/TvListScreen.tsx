@@ -16,10 +16,12 @@ import {
   RefreshCw,
   MonitorPlay,
   Train,
-  CloudCheck
+  CloudCheck,
+  Terminal
 } from 'lucide-react';
 import { TVDevice, TrainAlertInfo, normalizeTrainSchedules } from '../types';
 import { calculateTrainAlert } from '../utils/trainAlerts';
+import { ServerLogsModal } from './ServerLogsModal';
 
 interface TvListScreenProps {
   tvs: TVDevice[];
@@ -42,6 +44,7 @@ export function TvListScreen({
 }: TvListScreenProps) {
   const [copiedTvId, setCopiedTvId] = useState<string | null>(null);
   const [searchFilter, setSearchFilter] = useState('');
+  const [showLogsModal, setShowLogsModal] = useState(false);
 
   // Calculate live train alert for a given TV
   const getTvAlert = (tv: TVDevice): TrainAlertInfo | null => {
@@ -110,6 +113,15 @@ export function TvListScreen({
               <Clock className="w-3.5 h-3.5 text-amber-400" />
               <span>{currentTime || '--:--:--'}</span>
             </div>
+
+            <button
+              onClick={() => setShowLogsModal(true)}
+              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-slate-600 text-slate-300 hover:text-white rounded-xl text-xs font-mono font-medium transition flex items-center space-x-1.5"
+              title="Visualizar logs e requisições do servidor"
+            >
+              <Terminal className="w-3.5 h-3.5 text-blue-400" />
+              <span className="hidden sm:inline">Logs do Servidor</span>
+            </button>
 
             <button
               onClick={onAddNewTv}
@@ -358,6 +370,12 @@ export function TvListScreen({
         )}
 
       </main>
+
+      {/* Server Logs Real-Time Diagnostics Modal */}
+      <ServerLogsModal
+        isOpen={showLogsModal}
+        onClose={() => setShowLogsModal(false)}
+      />
     </div>
   );
 }

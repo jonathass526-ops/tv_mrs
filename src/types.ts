@@ -17,6 +17,8 @@ export interface TVDevice {
   showFileName: boolean;
   showClock: boolean;
   showUiInSlideshow: boolean;
+  videoAudioEnabled?: boolean;
+  videoVolume?: number; // 0 to 1 (default 1.0)
   autoRefresh: boolean;
   autoRefreshRate: number; // in milliseconds (e.g. 60000)
   createdAt: string;

@@ -33,6 +33,44 @@ function writeConfig(data: any) {
   }
 }
 
+// In-memory debug logs buffer for real-time diagnostics
+interface ServerLogEntry {
+  id: string;
+  timestamp: string;
+  type: 'info' | 'warn' | 'error' | 'stream';
+  message: string;
+  details?: any;
+}
+
+const serverLogs: ServerLogEntry[] = [];
+const MAX_SERVER_LOGS = 200;
+
+function addServerLog(type: 'info' | 'warn' | 'error' | 'stream', message: string, details?: any) {
+  const timestamp = new Date().toISOString();
+  const entry: ServerLogEntry = {
+    id: `${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    timestamp,
+    type,
+    message,
+    details,
+  };
+  
+  serverLogs.push(entry);
+  if (serverLogs.length > MAX_SERVER_LOGS) {
+    serverLogs.shift();
+  }
+
+  // Also print nicely to server console
+  const prefix = `[${timestamp.substring(11, 19)}] [${type.toUpperCase()}]`;
+  if (type === 'error') {
+    console.error(prefix, message, details ? details : '');
+  } else if (type === 'warn') {
+    console.warn(prefix, message, details ? details : '');
+  } else {
+    console.log(prefix, message, details ? details : '');
+  }
+}
+
 // Global tokens & selection cache from file
 let configState = readConfig();
 
@@ -198,13 +236,15 @@ async function startServer() {
             directCdnUrl = item.thumbnailLink.replace(/=s\d+.*$/, '=s0');
           }
 
+          const mediaUrl = `/api/drive/media/${item.id}?name=${encodeURIComponent(item.name || '')}&mime=${encodeURIComponent(item.mimeType || '')}`;
+
           return {
             id: item.id,
             name: item.name,
             size: item.size || 0,
             webUrl: item.webViewLink,
-            downloadUrl: `/api/drive/media/${item.id}`,
-            directUrl: isImage ? directCdnUrl : `/api/drive/media/${item.id}`,
+            downloadUrl: mediaUrl,
+            directUrl: isImage ? directCdnUrl : mediaUrl,
             isImage,
             isVideo,
             isPdf,
@@ -253,100 +293,244 @@ async function startServer() {
     });
   });
 
+  // 4.5 Debug Logs Endpoints
+  app.get('/api/debug/logs', (req, res) => {
+    res.json({
+      count: serverLogs.length,
+      logs: serverLogs,
+    });
+  });
+
+  app.get('/api/debug/logs/text', (req, res) => {
+    const text = serverLogs
+      .map(l => `[${l.timestamp}] [${l.type.toUpperCase().padEnd(6)}] ${l.message} ${l.details ? JSON.stringify(l.details) : ''}`)
+      .join('\n');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(text || 'Nenhum log registrado ainda no servidor.');
+  });
+
+  app.delete('/api/debug/logs', (req, res) => {
+    serverLogs.length = 0;
+    addServerLog('info', 'Logs do servidor limpos via API');
+    res.json({ ok: true });
+  });
+
   // Helper to determine mime type
   function getMediaMimeType(filename: string, fallbackMime?: string): string {
-    const lower = filename.toLowerCase();
-    if (lower.endsWith('.mp4')) return 'video/mp4';
+    const lower = (filename || '').toLowerCase();
+    // MOV / MP4 / M4V / MKV are MPEG-4 compatible containers.
+    // Serving video/mp4 is essential for Smart TVs (webOS/Tizen) and modern browsers
+    // because video/quicktime is rejected by HTML5 <video> elements.
+    if (lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.m4v') || lower.endsWith('.mkv')) return 'video/mp4';
     if (lower.endsWith('.webm')) return 'video/webm';
     if (lower.endsWith('.ogg') || lower.endsWith('.ogv')) return 'video/ogg';
-    if (lower.endsWith('.mov')) return 'video/quicktime';
-    if (lower.endsWith('.mkv')) return 'video/x-matroska';
     if (lower.endsWith('.png')) return 'image/png';
     if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
     if (lower.endsWith('.webp')) return 'image/webp';
     if (lower.endsWith('.gif')) return 'image/gif';
     if (lower.endsWith('.svg')) return 'image/svg+xml';
+    if (fallbackMime && fallbackMime.includes('quicktime')) return 'video/mp4';
+    if (fallbackMime && fallbackMime.startsWith('video/')) return fallbackMime;
     return fallbackMime || 'application/octet-stream';
   }
 
   // 5. Proxy endpoint to download/stream Google Drive media directly without saving to TV disk
   app.get('/api/drive/media/:id', async (req, res) => {
+    const fileId = req.params.id;
+    const fileName = (req.query.name as string) || '';
+    const mimeQuery = (req.query.mime as string) || '';
+    const rangeHeader = req.headers.range || '';
+    const userAgent = req.headers['user-agent'] || 'Desconhecido';
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    
+    // Identify Smart TV platform from User-Agent for logs
+    let deviceType = 'PC/Navegador';
+    const uaLower = userAgent.toLowerCase();
+    if (uaLower.includes('webos') || uaLower.includes('netcast')) deviceType = 'LG Smart TV (webOS)';
+    else if (uaLower.includes('tizen') || uaLower.includes('samsung')) deviceType = 'Samsung Smart TV (Tizen)';
+    else if (uaLower.includes('android') && uaLower.includes('tv')) deviceType = 'Android TV';
+    else if (uaLower.includes('smart-tv') || uaLower.includes('smarttv')) deviceType = 'Smart TV Genérica';
+
+    addServerLog('stream', `📥 Requisição de mídia: "${fileName || fileId}" (ID: ${fileId})`, {
+      device: deviceType,
+      range: rangeHeader || 'Completo (sem Range)',
+      ip: clientIp,
+    });
+
     try {
-      const fileId = req.params.id;
       const googleApiKey = process.env.GOOGLE_API_KEY;
-      
-      const fetchHeaders: any = {};
-      if (req.headers.range) fetchHeaders['Range'] = req.headers.range;
+      const expectedMime = getMediaMimeType(fileName, mimeQuery);
+      const isVideo = expectedMime.startsWith('video/') || fileName.toLowerCase().endsWith('.mp4') || fileName.toLowerCase().endsWith('.webm') || fileName.toLowerCase().endsWith('.mov') || fileName.toLowerCase().endsWith('.mkv') || fileName.toLowerCase().endsWith('.ogg');
+      const isImage = isImageExtension(fileName) || expectedMime.startsWith('image/');
+
+      const fetchHeaders: any = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      };
+      if (rangeHeader) fetchHeaders['Range'] = rangeHeader;
 
       let upstreamResponse: Response | null = null;
+      let finalContentType = expectedMime;
+      let chosenStrategy = 'Nenhuma';
 
       // Strategy 1: Google Drive API (Official alt=media)
       if (googleApiKey) {
         try {
           const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${googleApiKey}`;
           const r = await fetch(url, { headers: fetchHeaders });
-          if (r.ok || r.status === 206) {
+          const ct = (r.headers.get('content-type') || '').toLowerCase();
+          
+          if ((r.ok || r.status === 206) && !ct.includes('text/html') && !ct.includes('application/json')) {
             upstreamResponse = r;
+            chosenStrategy = 'Estratégia 1 (Google Drive API)';
+            finalContentType = isVideo ? (expectedMime !== 'application/octet-stream' ? expectedMime : 'video/mp4') : (r.headers.get('content-type') || expectedMime);
+            addServerLog('info', `✅ [Estratégia 1 OK] Google Drive API alt=media -> HTTP ${r.status} (${finalContentType})`);
           } else {
-            console.warn(`Drive API stream failed (${r.status}) for ${fileId}, trying CDN fallback...`);
+            addServerLog('warn', `⚠️ [Estratégia 1 Falhou] Status ${r.status} (${ct}) para arquivo ${fileId}, tentando fallback...`);
           }
-        } catch (e) {
-          console.warn(`Drive API fetch error for ${fileId}:`, e);
+        } catch (e: any) {
+          addServerLog('warn', `⚠️ [Estratégia 1 Erro] ${e?.message || e}`);
         }
       }
 
-      // Strategy 2: Google CDN (lh3.googleusercontent.com for public files)
-      if (!upstreamResponse) {
+      // Strategy 2: Google CDN (lh3.googleusercontent.com - ONLY FOR IMAGES)
+      if (!upstreamResponse && isImage) {
         try {
           const cdnUrl = `https://lh3.googleusercontent.com/d/${fileId}=w2560-h1440`;
           const r = await fetch(cdnUrl, { headers: fetchHeaders });
           if (r.ok || r.status === 206) {
             upstreamResponse = r;
+            chosenStrategy = 'Estratégia 2 (Google CDN Imagem)';
+            finalContentType = r.headers.get('content-type') || expectedMime;
+            addServerLog('info', `✅ [Estratégia 2 OK] Google CDN -> HTTP ${r.status} (${finalContentType})`);
           }
-        } catch (e) {
-          console.warn(`CDN fallback error for ${fileId}:`, e);
+        } catch (e: any) {
+          addServerLog('warn', `⚠️ [Estratégia 2 Erro] CDN fallback: ${e?.message || e}`);
         }
       }
 
-      // Strategy 3: Google Drive UC Export Download
+      // Strategy 3: Google Drive UserContent Direct Stream
+      if (!upstreamResponse && isVideo) {
+        try {
+          const userContentUrl = `https://drive.usercontent.google.com/download?id=${fileId}&export=download&confirm=t`;
+          const r = await fetch(userContentUrl, { headers: fetchHeaders, redirect: 'follow' });
+          const ct = (r.headers.get('content-type') || '').toLowerCase();
+
+          if ((r.ok || r.status === 206) && !ct.includes('text/html')) {
+            upstreamResponse = r;
+            chosenStrategy = 'Estratégia 3 (Google UserContent)';
+            finalContentType = isVideo ? 'video/mp4' : (r.headers.get('content-type') || expectedMime);
+            addServerLog('info', `✅ [Estratégia 3 OK] Google UserContent -> HTTP ${r.status} (${finalContentType})`);
+          }
+        } catch (e: any) {
+          addServerLog('warn', `⚠️ [Estratégia 3 Erro] UserContent: ${e?.message || e}`);
+        }
+      }
+
+      // Strategy 4: Google Drive UC Export Download (with Virus Scan Confirmation Bypass for large videos)
       if (!upstreamResponse) {
         try {
           const ucUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
           const r = await fetch(ucUrl, { headers: fetchHeaders, redirect: 'follow' });
-          if (r.ok || r.status === 206) {
+          const ct = (r.headers.get('content-type') || '').toLowerCase();
+
+          if ((r.ok || r.status === 206) && !ct.includes('text/html')) {
             upstreamResponse = r;
+            chosenStrategy = 'Estratégia 4 (Google UC Direto)';
+            finalContentType = isVideo ? (expectedMime !== 'application/octet-stream' ? expectedMime : 'video/mp4') : (r.headers.get('content-type') || expectedMime);
+            addServerLog('info', `✅ [Estratégia 4 OK] Google UC Direto -> HTTP ${r.status} (${finalContentType})`);
+          } else if (ct.includes('text/html')) {
+            // Large file virus warning page detected: extract confirmation token
+            const htmlText = await r.text();
+            const tokenMatch = htmlText.match(/confirm=([0-9A-Za-z_-]+)/) || 
+                               htmlText.match(/name="confirm"\s+value="([^"]+)"/) ||
+                               htmlText.match(/download_warning_[0-9A-Za-z_-]+=([0-9A-Za-z_-]+)/);
+            
+            const actionMatch = htmlText.match(/action="([^"]+)"/);
+            
+            if (tokenMatch && tokenMatch[1]) {
+              const confirmToken = tokenMatch[1];
+              addServerLog('info', `🔄 [Bypass Vírus] Token detectado (${confirmToken}) para vídeo grande`);
+              const confirmedUrl = actionMatch && actionMatch[1].startsWith('http')
+                ? `${actionMatch[1]}${actionMatch[1].includes('?') ? '&' : '?'}confirm=${confirmToken}&id=${fileId}`
+                : `https://drive.google.com/uc?export=download&confirm=${confirmToken}&id=${fileId}`;
+              
+              const setCookie = r.headers.get('set-cookie');
+              const secondHeaders = { ...fetchHeaders };
+              if (setCookie) secondHeaders['Cookie'] = setCookie;
+
+              const confirmedRes = await fetch(confirmedUrl, { headers: secondHeaders, redirect: 'follow' });
+              if (confirmedRes.ok || confirmedRes.status === 206) {
+                upstreamResponse = confirmedRes;
+                chosenStrategy = 'Estratégia 4 (Google UC Confirm Token Bypass)';
+                finalContentType = isVideo ? (expectedMime !== 'application/octet-stream' ? expectedMime : 'video/mp4') : (confirmedRes.headers.get('content-type') || expectedMime);
+                addServerLog('info', `✅ [Estratégia 4 Confirm OK] Vídeo liberado com token -> HTTP ${confirmedRes.status} (${finalContentType})`);
+              }
+            } else {
+              addServerLog('warn', `⚠️ [Estratégia 4 Falhou] Resposta em HTML mas token de confirmação não encontrado`);
+            }
           }
-        } catch (e) {
-          console.warn(`UC fallback error for ${fileId}:`, e);
+        } catch (e: any) {
+          addServerLog('warn', `⚠️ [Estratégia 4 Erro] UC fallback: ${e?.message || e}`);
         }
       }
 
       if (!upstreamResponse) {
+        addServerLog('error', `❌ Arquivo ${fileId} não pôde ser obtido por nenhuma estratégia do Google Drive`);
         return res.status(404).send('Media not found or not accessible on Google Drive');
       }
 
       res.status(upstreamResponse.status);
       
-      // Explicitly allow range streaming and inline rendering (so video/images display directly in-memory)
+      // Crucial for Smart TV: prevent dead cache lock on loop
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+
+      // Explicitly allow range streaming and inline rendering with correct MIME types for Smart TV webOS/Tizen
       res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Type', finalContentType);
       res.setHeader('Content-Disposition', 'inline');
       res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, Accept, Content-Type');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
       
-      // Forward safe headers from Google
-      upstreamResponse.headers.forEach((value, key) => {
-        const lowerKey = key.toLowerCase();
-        if (['content-type', 'content-length', 'accept-ranges', 'content-range', 'cache-control', 'last-modified', 'etag'].includes(lowerKey)) {
-          res.setHeader(key, value);
-        }
+      // Forward essential streaming headers from Google
+      const contentRange = upstreamResponse.headers.get('content-range');
+      if (contentRange) res.setHeader('Content-Range', contentRange);
+
+      const contentLength = upstreamResponse.headers.get('content-length');
+      if (contentLength) res.setHeader('Content-Length', contentLength);
+
+      const etag = upstreamResponse.headers.get('etag');
+      if (etag) res.setHeader('ETag', etag);
+
+      addServerLog('stream', `📤 Enviando stream para TV (${deviceType})`, {
+        status: upstreamResponse.status,
+        mime: finalContentType,
+        strategy: chosenStrategy,
+        contentLength: contentLength || 'chunked',
+        contentRange: contentRange || 'none',
       });
-      
+
       if (upstreamResponse.body) {
-        Readable.fromWeb(upstreamResponse.body as any).pipe(res);
+        const stream = Readable.fromWeb(upstreamResponse.body as any);
+        
+        stream.on('error', (err) => {
+          addServerLog('warn', `⚠️ Erro no pipe de streaming de ${fileId}: ${err.message}`);
+        });
+
+        res.on('close', () => {
+          if (!res.writableEnded) {
+            addServerLog('info', `ℹ️ Conexão de streaming encerrada pela TV (${fileName || fileId})`);
+          }
+        });
+
+        stream.pipe(res);
       } else {
         res.end();
       }
-    } catch (e) {
-      console.error('Error proxying media stream:', e);
+    } catch (e: any) {
+      addServerLog('error', `❌ Erro crítico proxyando mídia ${fileId}: ${e?.message || e}`);
       if (!res.headersSent) res.status(500).send('Internal server error proxying file');
     }
   });

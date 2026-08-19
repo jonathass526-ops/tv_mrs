@@ -13,7 +13,9 @@ import {
   Sparkles, 
   FlaskConical,
   Loader2,
-  Video as VideoIcon
+  Video as VideoIcon,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { TVDevice, MediaFile, TrainAlertInfo } from '../types';
 import { calculateTrainAlert } from '../utils/trainAlerts';
@@ -29,10 +31,17 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
   const [files, setFiles] = useState<MediaFile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [renderedIndex, setRenderedIndex] = useState(0);
+  const [cycleCounter, setCycleCounter] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isFadingOut, setIsFadingOut] = useState(false);
   const [showControls, setShowControls] = useState(false);
   const [testMode, setTestMode] = useState<'off' | 'banner' | 'fullscreen'>(initialTestMode);
+
+  // Audio Control State
+  const defaultAudioEnabled = tv.videoAudioEnabled ?? true;
+  const [isAudioMuted, setIsAudioMuted] = useState(!defaultAudioEnabled);
+  const [audioBlockedByBrowser, setAudioBlockedByBrowser] = useState(false);
+  const [hasUserInteracted, setHasUserInteracted] = useState(false);
 
   // Video Streaming & Watchdog State
   const [isVideoLoading, setIsVideoLoading] = useState(false);
@@ -41,12 +50,51 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const videoTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const videoTickRef = useRef<NodeJS.Timeout | null>(null);
+  const videoRetryCount = useRef<number>(0);
 
   const autoPlayTimer = useRef<NodeJS.Timeout | null>(null);
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
 
+  // Unlock browser audio context on any user interaction (click, remote OK, tap)
+  const unlockAudioContext = useCallback(() => {
+    setHasUserInteracted(true);
+    setAudioBlockedByBrowser(false);
+    if (tv.videoAudioEnabled !== false) {
+      setIsAudioMuted(false);
+      if (videoRef.current) {
+        videoRef.current.muted = false;
+        videoRef.current.volume = tv.videoVolume ?? 1;
+        if (isPlaying) {
+          videoRef.current.play().catch(() => {});
+        }
+      }
+    }
+  }, [tv.videoAudioEnabled, tv.videoVolume, isPlaying]);
+
+  useEffect(() => {
+    const handleInteraction = () => {
+      unlockAudioContext();
+    };
+
+    window.addEventListener('click', handleInteraction, { passive: true });
+    window.addEventListener('keydown', handleInteraction, { passive: true });
+    window.addEventListener('touchstart', handleInteraction, { passive: true });
+
+    return () => {
+      window.removeEventListener('click', handleInteraction);
+      window.removeEventListener('keydown', handleInteraction);
+      window.removeEventListener('touchstart', handleInteraction);
+    };
+  }, [unlockAudioContext]);
+
   const mediaFiles = useMemo(() => files.filter(f => f.isImage || f.isVideo || f.isPdf), [files]);
   const currentMedia = mediaFiles[renderedIndex] || null;
+
+  // Video stream URL with loop cycle tracking
+  const videoStreamUrl = useMemo(() => {
+    if (!currentMedia?.isVideo || !currentMedia.downloadUrl) return '';
+    return currentMedia.downloadUrl;
+  }, [currentMedia]);
 
   // Train Departure Alert Logic (90m top banner / 15m full screen / test mode)
   const trainAlert = useMemo<TrainAlertInfo | null>(() => {
@@ -98,9 +146,20 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
   // Slide navigation with smooth fade transition
   const handleNextSlide = useCallback(() => {
     if (mediaFiles.length <= 1) return;
+    if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+      } catch (e) {}
+    }
     setIsFadingOut(true);
     setTimeout(() => {
-      setCurrentIndex(prev => (prev + 1) % mediaFiles.length);
+      setCurrentIndex(prev => {
+        const next = (prev + 1) % mediaFiles.length;
+        if (next === 0) {
+          setCycleCounter(c => c + 1);
+        }
+        return next;
+      });
       setRenderedIndex(prev => (prev + 1) % mediaFiles.length);
       setIsFadingOut(false);
     }, 450);
@@ -108,6 +167,11 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
 
   const handlePrevSlide = useCallback(() => {
     if (mediaFiles.length <= 1) return;
+    if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+      } catch (e) {}
+    }
     setIsFadingOut(true);
     setTimeout(() => {
       setCurrentIndex(prev => (prev - 1 + mediaFiles.length) % mediaFiles.length);
@@ -146,6 +210,7 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
       setIsVideoLoading(true);
       setVideoHasStarted(false);
       setVideoElapsedSeconds(0);
+      videoRetryCount.current = 0;
 
       // Tick seconds for UI countdown / feedback
       videoTickRef.current = setInterval(() => {
@@ -169,35 +234,89 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
     };
   }, [renderedIndex, currentMedia?.id, currentMedia?.isVideo, isPlaying, trainAlert?.level, handleNextSlide]);
 
-  // Video play/pause synchronization
+  // Video play/pause synchronization & Smart Audio Autoplay Fallback
   useEffect(() => {
     if (!videoRef.current) return;
     if (isPlaying && trainAlert?.level !== 'fullscreen') {
-      videoRef.current.play().catch(err => {
-        console.warn('Vídeo auto-play pausado pelo navegador:', err);
-      });
+      videoRef.current.volume = tv.videoVolume ?? 1;
+      videoRef.current.muted = isAudioMuted;
+      
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(err => {
+          // If browser blocked unmuted autoplay policy
+          if (!isAudioMuted && (err?.name === 'NotAllowedError' || String(err).includes('interaction'))) {
+            console.warn('🔇 Navegador bloqueou áudio automático. Iniciando com som mudo temporariamente até o clique do usuário.');
+            setIsAudioMuted(true);
+            setAudioBlockedByBrowser(true);
+            if (videoRef.current) {
+              videoRef.current.muted = true;
+              videoRef.current.play().catch(() => {});
+            }
+          }
+        });
+      }
     } else {
       videoRef.current.pause();
     }
-  }, [isPlaying, trainAlert?.level, renderedIndex]);
+  }, [isPlaying, trainAlert?.level, renderedIndex, isAudioMuted, tv.videoVolume]);
 
   // Video event handlers
   const handleVideoPlaying = () => {
     setIsVideoLoading(false);
     setVideoHasStarted(true);
+    videoRetryCount.current = 0;
     if (videoTimeoutRef.current) clearTimeout(videoTimeoutRef.current);
     if (videoTickRef.current) clearInterval(videoTickRef.current);
   };
 
+  const handleTimeUpdate = () => {
+    if (videoRef.current && videoRef.current.currentTime > 0.2) {
+      if (!videoHasStarted) {
+        handleVideoPlaying();
+      }
+    }
+  };
+
+  const handleVideoEnded = () => {
+    const currentPos = videoRef.current?.currentTime || 0;
+    const dur = videoRef.current?.duration || 0;
+    // Only advance if video actually played to completion (> 1s or near duration)
+    if (videoHasStarted && (currentPos > 1 || (dur > 0 && currentPos >= dur - 0.5))) {
+      handleNextSlide();
+    } else {
+      console.warn('Evento "ended" disparado prematuramente a 0s. Ignorando falso encerramento e tentando retomar...');
+      if (videoRef.current) {
+        videoRef.current.play().catch(() => {});
+      }
+    }
+  };
+
   const handleVideoError = (e: any) => {
-    console.error(`Erro no stream de vídeo "${currentMedia?.name}":`, e);
+    const mediaError = videoRef.current?.error;
+    console.error(`Erro no stream de vídeo "${currentMedia?.name}":`, mediaError || e);
+    
+    // Auto-retry once or twice for transient Smart TV connection hiccups
+    if (videoRetryCount.current < 2) {
+      videoRetryCount.current += 1;
+      console.log(`Reconectando stream de vídeo na TV (Tentativa ${videoRetryCount.current}/2)...`);
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.load();
+          videoRef.current.play().catch(() => {});
+        }
+      }, 1000);
+      return;
+    }
+
     setIsVideoLoading(false);
     if (videoTimeoutRef.current) clearTimeout(videoTimeoutRef.current);
     if (videoTickRef.current) clearInterval(videoTickRef.current);
-    // Move to next slide on error after 1.5 seconds so screen does not lock
+    
+    // Move to next slide on error after 2 seconds
     setTimeout(() => {
       handleNextSlide();
-    }, 1500);
+    }, 2000);
   };
 
   // Mouse move / interaction handler to show controls temporarily on mouse activity
@@ -222,6 +341,13 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
       } else if (e.key === ' ' || e.key === 'p' || e.key === 'P' || e.key === 'k' || e.key === 'K') {
         e.preventDefault();
         setIsPlaying(prev => !prev);
+      } else if (e.key === 'm' || e.key === 'M') {
+        if (isAudioMuted) {
+          unlockAudioContext();
+        } else {
+          setIsAudioMuted(true);
+          if (videoRef.current) videoRef.current.muted = true;
+        }
       } else if (e.key === 't' || e.key === 'T') {
         // Cycle test modes for quick debugging on TV
         setTestMode(prev => prev === 'off' ? 'banner' : prev === 'banner' ? 'fullscreen' : 'off');
@@ -381,21 +507,67 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
                   <div className="relative w-full h-full flex items-center justify-center">
                     <video
                       ref={videoRef}
-                      key={currentMedia.id}
-                      src={currentMedia.downloadUrl || ''}
+                      key={`tv-video-${currentMedia.id}-${cycleCounter}`}
+                      src={videoStreamUrl}
                       autoPlay
-                      muted
+                      muted={isAudioMuted}
                       playsInline
                       preload="auto"
-                      onPlaying={handleVideoPlaying}
-                      onTimeUpdate={() => {
-                        if (!videoHasStarted) handleVideoPlaying();
+                      controls={false}
+                      disablePictureInPicture
+                      onCanPlay={() => {
+                        if (videoRef.current) {
+                          videoRef.current.volume = tv.videoVolume ?? 1;
+                          videoRef.current.muted = isAudioMuted;
+                          if (isPlaying) {
+                            videoRef.current.play().catch(err => {
+                              if (!isAudioMuted && err?.name === 'NotAllowedError') {
+                                setIsAudioMuted(true);
+                                setAudioBlockedByBrowser(true);
+                                if (videoRef.current) {
+                                  videoRef.current.muted = true;
+                                  videoRef.current.play().catch(() => {});
+                                }
+                              }
+                            });
+                          }
+                        }
                       }}
-                      onWaiting={() => setIsVideoLoading(true)}
+                      onLoadedMetadata={() => {
+                        if (videoRef.current) {
+                          videoRef.current.volume = tv.videoVolume ?? 1;
+                          videoRef.current.muted = isAudioMuted;
+                        }
+                      }}
+                      onPlaying={handleVideoPlaying}
+                      onTimeUpdate={handleTimeUpdate}
+                      onWaiting={() => {
+                        if (!videoHasStarted) setIsVideoLoading(true);
+                      }}
                       onError={handleVideoError}
-                      onEnded={handleNextSlide}
+                      onEnded={handleVideoEnded}
                       className="w-full h-full object-contain"
                     />
+
+                    {/* Interactive Floating Unlock Sound Banner (when browser blocks autoplay with audio) */}
+                    {isAudioMuted && (tv.videoAudioEnabled ?? true) && videoHasStarted && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          unlockAudioContext();
+                        }}
+                        className="absolute bottom-8 right-8 z-30 bg-blue-600/95 hover:bg-blue-500 text-white px-4 py-2.5 rounded-2xl font-bold text-xs shadow-2xl flex items-center space-x-2.5 border border-blue-400/50 animate-bounce active:scale-95 cursor-pointer backdrop-blur-md transition"
+                        title="Clique ou pressione OK no controle para ativar o som"
+                      >
+                        <div className="p-1 bg-amber-400 rounded-full text-slate-950">
+                          <VolumeX className="w-3.5 h-3.5" />
+                        </div>
+                        <div className="flex flex-col text-left">
+                          <span className="font-extrabold text-white text-[12px] leading-tight">Vídeo Sem Som</span>
+                          <span className="text-[10px] text-blue-100 font-medium">Clique ou pressione OK no controle para ATIVAR O SOM</span>
+                        </div>
+                      </button>
+                    )}
 
                     {/* Google Direct Stream Connection Watchdog Indicator (if connecting) */}
                     {isVideoLoading && !videoHasStarted && (
@@ -547,6 +719,29 @@ export function TvSlideshow({ tv, currentTime, initialTestMode = 'off', onExit }
 
                     <div className="h-4 w-px bg-white/20" />
                   </>
+                )}
+
+                {currentMedia?.isVideo && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isAudioMuted) {
+                        unlockAudioContext();
+                      } else {
+                        setIsAudioMuted(true);
+                        if (videoRef.current) videoRef.current.muted = true;
+                      }
+                    }}
+                    className={`px-2.5 py-1.5 rounded-xl transition active:scale-95 flex items-center space-x-1.5 text-xs font-semibold ${
+                      isAudioMuted
+                        ? 'text-amber-300 bg-amber-500/20 border border-amber-500/30 hover:bg-amber-500/30'
+                        : 'text-emerald-300 bg-emerald-500/20 border border-emerald-500/30 hover:bg-emerald-500/30'
+                    }`}
+                    title={isAudioMuted ? 'Ativar Áudio (M)' : 'Silenciar Áudio (M)'}
+                  >
+                    {isAudioMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                    <span className="hidden sm:inline">{isAudioMuted ? 'Mudo' : 'Com Som'}</span>
+                  </button>
                 )}
 
                 <button
